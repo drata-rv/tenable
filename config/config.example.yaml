@@ -1,0 +1,31 @@
+nessus:
+  base_url: "https://localhost:8834"
+  verify_tls: true
+  ca_bundle: "C:/ProgramData/NessusDrataCollector/nessus-ca.pem"
+  scan_id: 47
+  scan_name_exact: null
+  use_latest_history: true
+  export_format: "nessus"        # "nessus" | "csv"
+  export_timeout_seconds: 900
+  connect_timeout_seconds: 10
+  read_timeout_seconds: 120
+
+drata:
+  base_url: "https://public-api.drata.com"
+  connection_id: 0               # set after one-time connection creation
+  resource_id: 0                 # from expand[]=customResources
+  use_sessions: true
+  batch_size: 25
+  max_retries: 5
+
+safety:
+  min_hosts: 50
+  max_shrink_ratio: 0.8
+  min_manifest_coverage_pct: 90
+
+runtime:
+  artifacts_dir: "C:/ProgramData/NessusDrataCollector/artifacts"
+  state_dir: "C:/ProgramData/NessusDrataCollector/state"
+  log_dir: "C:/ProgramData/NessusDrataCollector/logs"
+  keep_raw_exports_days: 30
+  keep_payloads_days: 14

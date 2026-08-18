@@ -1,0 +1,32 @@
+# Operator-maintained contract between Nessus compliance check names and Drata
+# schema field names. Copy to config/checks.yaml and replace the placeholder
+# check names below with the verbatim text from your Nessus compliance results.
+# Never commit config/checks.yaml — it is gitignored because live check names
+# are customer-specific.
+schema_version: 1
+audit_file: CIS_MS_Windows_11_Enterprise_v3.0.0_L1.audit
+
+checks:
+  - field: cis_4_5_firewall_public_state
+    label: "CIS 4.5 — Windows Firewall public profile enabled"
+    match:
+      check_name_exact: "4.5 Ensure 'Windows Firewall: Public: Firewall state' is 'On'"
+    required: true
+
+  - field: cis_4_5_firewall_private_state
+    label: "CIS 4.5 — Windows Firewall private profile enabled"
+    match:
+      check_name_prefix: "4.5 Ensure 'Windows Firewall: Private: Firewall state'"
+    required: true
+
+  - field: edr_agent_service_running
+    label: "EDR agent service running"
+    match:
+      check_name_contains: "<EDR vendor service string>"
+    required: true
+
+  - field: defender_service_running
+    label: "Microsoft Defender service running"
+    match:
+      check_name_contains: "Defender"
+    required: true
