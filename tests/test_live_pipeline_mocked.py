@@ -24,6 +24,7 @@ from nessus_drata.state import load_last_run_state
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_SMALL = REPO_ROOT / "tests" / "fixtures" / "sample_small.nessus"
+SAMPLE_CSV = REPO_ROOT / "tests" / "fixtures" / "sample_compliance.csv"
 CHECKS = REPO_ROOT / "tests" / "fixtures" / "checks_small.yaml"
 
 NESSUS_BASE = "https://nessus.test:8834"
@@ -71,7 +72,7 @@ runtime:
     return config_path
 
 
-def _register_nessus_mocks(rsps: responses.RequestsMock) -> None:
+def _register_nessus_mocks(rsps: responses.RequestsMock, download_body: bytes = None) -> None:
     rsps.add(
         responses.GET,
         f"{NESSUS_BASE}/scans/47",
@@ -102,7 +103,7 @@ def _register_nessus_mocks(rsps: responses.RequestsMock) -> None:
     rsps.add(
         responses.GET,
         f"{NESSUS_BASE}/scans/47/export/1/download",
-        body=SAMPLE_SMALL.read_bytes(),
+        body=download_body if download_body is not None else SAMPLE_SMALL.read_bytes(),
         status=200,
         content_type="application/octet-stream",
     )
@@ -288,3 +289,102 @@ def test_live_pipeline_cancels_real_session_when_batch_upload_fails(tmp_path, mo
 
     state = load_last_run_state(tmp_path / "state")
     assert state.last_record_count is None
+
+
+def _write_csv_config(tmp_path: Path) -> Path:
+    """Like _write_config, but export_format: csv and manifest-coverage gate
+    disabled (min_manifest_coverage_pct: 0) so these tests isolate the
+    parse_mode gate specifically -- the CSV fixture's check names only
+    partially match checks_small.yaml, which would otherwise also fail the
+    coverage gate and muddy what's being proven here (acceptance test 13).
+    """
+    config_path = tmp_path / "config_csv.yaml"
+    config_path.write_text(
+        _write_config(tmp_path)
+        .read_text()
+        .replace('export_format: "nessus"', 'export_format: "csv"')
+        .replace("min_manifest_coverage_pct: 90", "min_manifest_coverage_pct: 0")
+    )
+    return config_path
+
+
+@responses.activate
+def test_acceptance_13_csv_degraded_session_refused_without_flag(tmp_path, monkeypatch):
+    monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
+    monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
+    monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nessus_drata.nessus_client.time.sleep", lambda _s: None)
+
+    config_path = _write_csv_config(tmp_path)
+    _register_nessus_mocks(responses, download_body=SAMPLE_CSV.read_bytes())
+    responses.add(
+        responses.GET,
+        f"{DRATA_BASE}/public/v2/custom-connections/99/resources/5/sessions",
+        json=[],
+        status=200,
+    )
+
+    exit_code = cli.main(["--config", str(config_path), "--checks", str(CHECKS), "run"])
+
+    assert exit_code == 5
+    reports = list((tmp_path / "artifacts" / "reports").glob("*.json"))
+    report = json.loads(reports[0].read_text())
+    assert report["parse_mode"] == "csv_degraded"
+    assert report["session_action"] == "aborted_pre_upload"
+    gate_by_name = {g["name"]: g for g in report["safety_gates"]}
+    assert gate_by_name["parse_mode"]["passed"] is False
+
+    payloads_dir = list((tmp_path / "artifacts" / "payloads").iterdir())[0]
+    records = json.loads((payloads_dir / "records.json").read_text())
+    assert all(r["source_fidelity"] == "degraded" for r in records)
+
+
+@responses.activate
+def test_csv_degraded_session_proceeds_with_allow_degraded_flag(tmp_path, monkeypatch):
+    monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
+    monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
+    monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nessus_drata.nessus_client.time.sleep", lambda _s: None)
+
+    config_path = _write_csv_config(tmp_path)
+    _register_nessus_mocks(responses, download_body=SAMPLE_CSV.read_bytes())
+
+    import re
+
+    responses.add(
+        responses.GET,
+        f"{DRATA_BASE}/public/v2/custom-connections/99/resources/5/sessions",
+        json=[],
+        status=200,
+    )
+    session_batch_re = re.compile(
+        rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/[^/]+$"
+    )
+    session_action_re = re.compile(
+        rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/[^/]+/actions$"
+    )
+    responses.add(responses.POST, session_batch_re, json={"data": []}, status=200)
+    session_actions: list = []
+
+    def action_callback(request):
+        body = json.loads(request.body)
+        session_actions.append(body.get("action"))
+        return (200, {}, json.dumps({}))
+
+    responses.add_callback(responses.POST, session_action_re, callback=action_callback)
+
+    exit_code = cli.main(
+        [
+            "--config",
+            str(config_path),
+            "--checks",
+            str(CHECKS),
+            "--allow-degraded-session",
+            "run",
+        ]
+    )
+
+    assert exit_code == 0, "expected --allow-degraded-session to let the CSV session complete"
+    assert session_actions == ["complete"]
