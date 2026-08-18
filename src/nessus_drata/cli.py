@@ -20,15 +20,15 @@ from .config import (
     load_manifest_audit_file,
     redact,
 )
-from .drata_client import DrataApiError
+from .drata_client import DrataApiError, DrataClient
 from .logging_setup import setup_logging
 from .nessus_client import NessusApiError, NessusClient
 from .parse_nessus_csv import parse_nessus_csv
 from .parse_nessus_xml import parse_nessus_xml
 from .report import RunReport, print_console_summary, write_report
-from .safety import apply_force_bypass, bypassed_gate_names, evaluate_gates
+from .safety import all_gates_passed, apply_force_bypass, bypassed_gate_names, evaluate_gates
 from .schema_gen import generate_schema
-from .state import LockHeldError, acquire_lock, load_last_run_state
+from .state import LastRunState, LockHeldError, acquire_lock, load_last_run_state, save_last_run_state
 from .transform import TransformError, transform_host_results
 
 EXIT_OK = 0
@@ -123,12 +123,43 @@ def cmd_probe_nessus(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_probe_drata(args: argparse.Namespace) -> int:
+    config = load_config(Path(args.config), Path(args.checks), require_secrets=False)
+    api_key = get_required_env("DRATA_API_KEY")
+    client = DrataClient(
+        base_url=config.drata.base_url, api_key=api_key, max_retries=config.drata.max_retries
+    )
+    connection = client.get_connection(config.drata.connection_id)
+    resources = connection.get("customResources") or []
+    resource_id = resources[0].get("id") if resources else None
+    display_name_key = connection.get("displayNameKey")
+    print(f"connectionId: {config.drata.connection_id}")
+    print(f"resourceId: {resource_id}")
+    print(f"displayNameKey: {display_name_key}")
+    return EXIT_OK
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _run_id_from(started_at: str) -> str:
     return started_at.replace(":", "").replace("-", "")
+
+
+def _session_id_for(scan_id: int, scan_ended_at: str) -> str:
+    """Deterministic, traceable session id (spec Section 5.3, literal format:
+    'nessus-{scan_id}-{scan_ended_at as YYYYMMDDTHHMMSSZ}'). The 'nessus-'
+    prefix here is a literal from the spec's own format string, distinct from
+    the configurable drata.record_id_prefix used for per-record ids.
+    """
+    compact = scan_ended_at.replace(":", "").replace("-", "")
+    return f"nessus-{scan_id}-{compact}"
+
+
+def _chunk(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
 
 
 def _resolve_scan_id(client: NessusClient, config: AppConfig) -> int:
@@ -250,6 +281,103 @@ def _parse_scan_input(
     return _live_nessus_export(config, run_id)
 
 
+def _live_drata_push(
+    config: AppConfig,
+    records: tuple,
+    parse_mode: str,
+    summary,
+    prior_state: LastRunState,
+    args: argparse.Namespace,
+    logger: logging.Logger,
+) -> tuple[int, Optional[str], str, int, tuple]:
+    """Session-based push (spec Section 5.3) with safety-gate enforcement
+    (Section 5.5). Returns (exit_code, session_id, session_action,
+    batches_sent, final_gates).
+
+    UNVERIFIED against a live Drata sandbox — no reachable instance in this
+    build environment. Pending operator execution (acceptance test 22
+    specifically exercises this path end to end).
+    """
+    if config.drata.connection_id == 0 or config.drata.resource_id == 0:
+        raise ConfigError(
+            "drata.connection_id and drata.resource_id must be set after "
+            "one-time connection creation (spec Section 11 Runbook) — both "
+            "are still 0 (placeholder default)"
+        )
+
+    def _evaluate(batch_upload_results):
+        gates = evaluate_gates(
+            record_count=len(records),
+            previous_record_count=prior_state.last_record_count,
+            coverage_pct=summary.coverage_pct,
+            duplicate_ids=summary.duplicate_ids,
+            parse_mode=parse_mode,
+            allow_degraded_session=args.allow_degraded_session,
+            batch_upload_results=batch_upload_results,
+            min_hosts=config.safety.min_hosts,
+            max_shrink_ratio=config.safety.max_shrink_ratio,
+            min_manifest_coverage_pct=config.safety.min_manifest_coverage_pct,
+        )
+        return apply_force_bypass(gates, force=args.force)
+
+    pre_gates = _evaluate(batch_upload_results=None)
+    for name in bypassed_gate_names(pre_gates):
+        logger.warning("safety gate BYPASSED by --force: %s", name)
+
+    api_key = get_required_env("DRATA_API_KEY")
+    client = DrataClient(
+        base_url=config.drata.base_url, api_key=api_key, max_retries=config.drata.max_retries
+    )
+
+    scan_id_for_session = records[0]["scan_id"] if records else 0
+    scan_ended_at_for_session = records[0]["scan_ended_at"] if records else _now_iso()
+    session_id = _session_id_for(scan_id_for_session, scan_ended_at_for_session)
+
+    # Only one session may be IN_PROGRESS at a time (spec 5.3). Cancel any
+    # OTHER stale in-progress session — never our own about-to-be-(re)used
+    # session_id, since re-running the identical scan is a legitimate
+    # retry/continuation, not a stale leftover.
+    existing_sessions = client.list_sessions(config.drata.connection_id, config.drata.resource_id)
+    for existing in existing_sessions:
+        other_id = existing.get("id") or existing.get("sessionId")
+        if other_id and other_id != session_id:
+            logger.warning("cancelling stale in-progress session %s", other_id)
+            client.cancel_session(config.drata.connection_id, config.drata.resource_id, other_id)
+
+    if not all_gates_passed(pre_gates):
+        # No batch has been uploaded under session_id yet, so there is no
+        # session for Drata to actually cancel (a session only exists
+        # server-side once the first batch POST creates it) — distinct from
+        # the post-upload failure path below, which does call cancel_session
+        # on a session that genuinely exists.
+        logger.error("safety gate(s) failed before any upload; nothing sent")
+        return EXIT_SAFETY_GATE, session_id, "aborted_pre_upload", 0, pre_gates
+
+    batch_upload_results = []
+    batches_sent = 0
+    for batch in _chunk(list(records), config.drata.batch_size):
+        try:
+            client.upload_session_batch(
+                config.drata.connection_id, config.drata.resource_id, session_id, batch
+            )
+            batch_upload_results.append(True)
+            batches_sent += 1
+        except DrataApiError as exc:
+            logger.error("batch upload failed: %s", exc)
+            batch_upload_results.append(False)
+            break  # spec: a single failed batch aborts completion
+
+    final_gates = _evaluate(batch_upload_results=batch_upload_results)
+
+    if all_gates_passed(final_gates):
+        client.complete_session(config.drata.connection_id, config.drata.resource_id, session_id)
+        return EXIT_OK, session_id, "complete", batches_sent, final_gates
+
+    logger.error("safety gate(s) failed after upload; cancelling session %s", session_id)
+    client.cancel_session(config.drata.connection_id, config.drata.resource_id, session_id)
+    return EXIT_SAFETY_GATE, session_id, "cancel", batches_sent, final_gates
+
+
 def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.Logger) -> int:
     started_at = _now_iso()
     run_id = _run_id_from(started_at)
@@ -278,28 +406,28 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
 
     prior_state = load_last_run_state(Path(config.runtime.state_dir))
 
-    gates = evaluate_gates(
-        record_count=len(records),
-        previous_record_count=prior_state.last_record_count,
-        coverage_pct=summary.coverage_pct,
-        duplicate_ids=summary.duplicate_ids,
-        parse_mode=parse_mode,
-        allow_degraded_session=args.allow_degraded_session,
-        batch_upload_results=None,  # no live upload attempted yet (dry-run always; live push is Phase 6)
-        min_hosts=config.safety.min_hosts,
-        max_shrink_ratio=config.safety.max_shrink_ratio,
-        min_manifest_coverage_pct=config.safety.min_manifest_coverage_pct,
-    )
-    gates = apply_force_bypass(gates, force=args.force)
-    for name in bypassed_gate_names(gates):
-        logger.warning("safety gate BYPASSED by --force: %s", name)
-
     payloads_dir = Path(config.runtime.artifacts_dir) / "payloads" / run_id
     payloads_dir.mkdir(parents=True, exist_ok=True)
     payload_path = payloads_dir / "records.json"
     payload_path.write_text(json.dumps(list(records), indent=2) + "\n")
 
     if args.dry_run:
+        gates = evaluate_gates(
+            record_count=len(records),
+            previous_record_count=prior_state.last_record_count,
+            coverage_pct=summary.coverage_pct,
+            duplicate_ids=summary.duplicate_ids,
+            parse_mode=parse_mode,
+            allow_degraded_session=args.allow_degraded_session,
+            batch_upload_results=None,  # dry-run: no live upload attempted, gate 6 not evaluated
+            min_hosts=config.safety.min_hosts,
+            max_shrink_ratio=config.safety.max_shrink_ratio,
+            min_manifest_coverage_pct=config.safety.min_manifest_coverage_pct,
+        )
+        gates = apply_force_bypass(gates, force=args.force)
+        for name in bypassed_gate_names(gates):
+            logger.warning("safety gate BYPASSED by --force: %s", name)
+
         logger.info(
             "dry-run: wrote %d record(s) to %s, zero Drata calls made",
             len(records),
@@ -310,12 +438,22 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
         session_action = None
         batches_sent = 0
     else:
-        # Live push — Phase 6. Never hit by an offline acceptance test.
-        raise NotImplementedError(
-            "live Drata session push is implemented in Phase 6 — pass --dry-run for now"
+        exit_code, session_id, session_action, batches_sent, gates = _live_drata_push(
+            config, records, parse_mode, summary, prior_state, args, logger
         )
 
     finished_at = _now_iso()
+
+    if not args.dry_run and exit_code == EXIT_OK:
+        save_last_run_state(
+            Path(config.runtime.state_dir),
+            LastRunState(
+                last_success_at=finished_at,
+                last_record_count=len(records),
+                last_session_id=session_id,
+                last_scan_ended_at=scan_ended_at,
+            ),
+        )
     report = RunReport(
         run_id=run_id,
         started_at=started_at,
@@ -399,6 +537,10 @@ def build_parser() -> argparse.ArgumentParser:
         "probe-nessus",
         help="GET /server/status and /scans. Confirms credentials and reachability.",
     )
+    sub.add_parser(
+        "probe-drata",
+        help="GET the connection with expand[]=customResources. Confirms key, scopes, IDs.",
+    )
 
     run_parser = sub.add_parser(
         "run",
@@ -418,6 +560,7 @@ _HANDLERS = {
     "validate-config": cmd_validate_config,
     "gen-schema": cmd_gen_schema,
     "probe-nessus": cmd_probe_nessus,
+    "probe-drata": cmd_probe_drata,
     "run": cmd_run,
 }
 
