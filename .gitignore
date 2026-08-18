@@ -18,6 +18,9 @@ logs/
 *.csv
 !tests/fixtures/*.csv
 
+# local Claude Code overrides — not shared with future contributors
+.claude/settings.local.json
+
 # python
 __pycache__/
 *.py[cod]

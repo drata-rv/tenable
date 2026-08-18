@@ -1,0 +1,4 @@
+#!/bin/sh
+# Strip any attribution trailer. Team attribution only.
+sed -i.bak -E '/^(Co-Authored-By|Co-authored-by|Signed-off-by|Generated-with|Assisted-by):/d' "$1"
+rm -f "$1.bak"
