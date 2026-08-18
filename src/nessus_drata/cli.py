@@ -22,6 +22,7 @@ from .config import (
 )
 from .drata_client import DrataApiError
 from .logging_setup import setup_logging
+from .nessus_client import NessusApiError, NessusClient
 from .parse_nessus_csv import parse_nessus_csv
 from .parse_nessus_xml import parse_nessus_xml
 from .report import RunReport, print_console_summary, write_report
@@ -84,6 +85,44 @@ def cmd_gen_schema(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _build_nessus_client(config: AppConfig, access_key: str, secret_key: str) -> NessusClient:
+    if not config.nessus.verify_tls:
+        print(
+            "[WARNING] TLS verification is DISABLED for the Nessus console "
+            "(verify_tls: false). This is insecure.",
+            file=sys.stderr,
+        )
+    return NessusClient(
+        base_url=config.nessus.base_url,
+        access_key=access_key,
+        secret_key=secret_key,
+        verify_tls=config.nessus.verify_tls,
+        ca_bundle=config.nessus.ca_bundle,
+        connect_timeout=config.nessus.connect_timeout_seconds,
+        read_timeout=config.nessus.read_timeout_seconds,
+    )
+
+
+def cmd_probe_nessus(args: argparse.Namespace) -> int:
+    config = load_config(Path(args.config), Path(args.checks), require_secrets=False)
+    access_key = get_required_env("NESSUS_ACCESS_KEY")
+    secret_key = get_required_env("NESSUS_SECRET_KEY")
+
+    client = _build_nessus_client(config, access_key, secret_key)
+    status = client.server_status()
+    print(f"server_status: {status}")
+
+    scans_response = client.list_scans()
+    scans = scans_response.get("scans") or []
+    print(f"scans: {len(scans)} found")
+    for scan in scans:
+        print(
+            f"  id={scan.get('id')} name={scan.get('name')!r} "
+            f"status={scan.get('status')} last_modification_date={scan.get('last_modification_date')}"
+        )
+    return EXIT_OK
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -92,16 +131,109 @@ def _run_id_from(started_at: str) -> str:
     return started_at.replace(":", "").replace("-", "")
 
 
-def _parse_scan_input(args: argparse.Namespace, config: AppConfig) -> tuple[list, str, int, str]:
-    """Returns (host_results, parse_mode, scan_id, scan_name).
+def _resolve_scan_id(client: NessusClient, config: AppConfig) -> int:
+    """Spec Section 3.5: scan_id (preferred) or scan_name_exact, requiring
+    exactly one match. Never fuzzy match."""
+    if config.nessus.scan_id is not None:
+        return config.nessus.scan_id
+    if config.nessus.scan_name_exact:
+        scans_response = client.list_scans()
+        scans = scans_response.get("scans") or []
+        matches = [s for s in scans if s.get("name") == config.nessus.scan_name_exact]
+        if len(matches) != 1:
+            raise ConfigError(
+                f"scan_name_exact {config.nessus.scan_name_exact!r} matched "
+                f"{len(matches)} scan(s); need exactly 1"
+            )
+        return matches[0]["id"]
+    raise ConfigError("config must supply nessus.scan_id or nessus.scan_name_exact")
+
+
+def _epoch_to_iso(value) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        epoch = int(value)
+    except (TypeError, ValueError):
+        return None
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _live_nessus_export(
+    config: AppConfig, run_id: str
+) -> tuple[list, str, int, str, Optional[str]]:
+    """Returns (host_results, parse_mode, scan_id, scan_name, scan_ended_at).
+
+    UNVERIFIED against a live console — this sandbox has no reachable Nessus
+    instance. Response field names (info.name, info.status,
+    history[].history_id/.status/.last_modification_date) follow the
+    standard, documented Nessus API shape referenced in the spec's own
+    Sources section, but this whole path is pending operator verification
+    per acceptance tests 20, 22, 23, 24.
+    """
+    access_key = get_required_env("NESSUS_ACCESS_KEY")
+    secret_key = get_required_env("NESSUS_SECRET_KEY")
+    client = _build_nessus_client(config, access_key, secret_key)
+
+    scan_id = _resolve_scan_id(client, config)
+    scan_detail = client.get_scan(scan_id)
+    info = scan_detail.get("info")
+    if not isinstance(info, dict):
+        raise NessusApiError(f"scan {scan_id}: response has no 'info' object")
+    scan_name = info.get("name", "")
+
+    history_id = None
+    if config.nessus.use_latest_history:
+        history = scan_detail.get("history") or []
+        completed = [h for h in history if h.get("status") == "completed"]
+        if not completed:
+            raise NessusApiError(f"scan {scan_id} has no completed history entry")
+        latest = max(completed, key=lambda h: h.get("last_modification_date") or 0)
+        history_id = latest.get("history_id")
+        scan_ended_at = _epoch_to_iso(latest.get("last_modification_date"))
+    else:
+        status = info.get("status")
+        if status == "running":
+            raise NessusApiError(f"scan {scan_id} is in progress (status=running)")
+        if status != "completed":
+            raise NessusApiError(f"scan {scan_id} status is {status!r}, expected 'completed'")
+        scan_ended_at = _epoch_to_iso(info.get("last_modification_date"))
+
+    export_response = client.request_export(
+        scan_id, export_format=config.nessus.export_format, history_id=history_id
+    )
+    file_id = export_response.get("file")
+    if file_id is None:
+        raise NessusApiError(f"scan {scan_id}: export response missing 'file' id")
+
+    client.wait_for_export_ready(
+        scan_id, file_id, timeout_seconds=config.nessus.export_timeout_seconds
+    )
+
+    raw_dir = Path(config.runtime.artifacts_dir) / "raw" / run_id
+    extension = "csv" if config.nessus.export_format == "csv" else "nessus"
+    dest_path = raw_dir / f"scan-{scan_id}.{extension}"
+    client.download_export(scan_id, file_id, dest_path)
+
+    if config.nessus.export_format == "csv":
+        hosts = list(parse_nessus_csv(dest_path))
+        parse_mode = "csv_degraded"
+    else:
+        hosts = list(parse_nessus_xml(dest_path))
+        parse_mode = "xml_full"
+
+    return hosts, parse_mode, scan_id, scan_name, scan_ended_at
+
+
+def _parse_scan_input(
+    args: argparse.Namespace, config: AppConfig, run_id: str
+) -> tuple[list, str, int, str, Optional[str]]:
+    """Returns (host_results, parse_mode, scan_id, scan_name, scan_ended_at).
 
     --fixtures skips the Nessus client entirely (spec Section 2 #4, Section
-    10) — zero network, zero credentials. Live export (no --fixtures) is
-    Phase 5's deliverable; nessus_client.py does not exist yet, so that path
-    raises NotImplementedError for now rather than pretending to work. This
-    is never hit by any offline acceptance test (1-19, 25-29 all use
-    --fixtures); tests 20-24 explicitly require live access and are reported
-    as pending operator execution.
+    10) — zero network, zero credentials. scan_ended_at is None in fixture
+    mode (there's no real scan to report a freshness timestamp for); the
+    caller falls back to "now" in that case.
     """
     if args.fixtures:
         fixtures_path = Path(args.fixtures)
@@ -113,26 +245,22 @@ def _parse_scan_input(args: argparse.Namespace, config: AppConfig) -> tuple[list
             parse_mode = "xml_full"
         scan_id = config.nessus.scan_id if config.nessus.scan_id is not None else 0
         scan_name = f"Fixture Import: {fixtures_path.name}"
-        return hosts, parse_mode, scan_id, scan_name
+        return hosts, parse_mode, scan_id, scan_name, None
 
-    # Live path — Phase 5.
-    get_required_env("NESSUS_ACCESS_KEY")
-    get_required_env("NESSUS_SECRET_KEY")
-    raise NotImplementedError(
-        "live Nessus export is implemented in Phase 5 (nessus_client.py does "
-        "not exist yet) — pass --fixtures for now"
-    )
+    return _live_nessus_export(config, run_id)
 
 
 def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.Logger) -> int:
     started_at = _now_iso()
     run_id = _run_id_from(started_at)
 
-    hosts, parse_mode, scan_id, scan_name = _parse_scan_input(args, config)
+    hosts, parse_mode, scan_id, scan_name, live_scan_ended_at = _parse_scan_input(
+        args, config, run_id
+    )
 
     audit_file = load_manifest_audit_file(Path(args.checks))
     now = _now_iso()
-    scan_ended_at = now
+    scan_ended_at = live_scan_ended_at or now
     collected_at = now
 
     transform_result = transform_host_results(
@@ -267,6 +395,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gen_schema_parser.add_argument("--out", default="artifacts/schema.json")
 
+    sub.add_parser(
+        "probe-nessus",
+        help="GET /server/status and /scans. Confirms credentials and reachability.",
+    )
+
     run_parser = sub.add_parser(
         "run",
         help="Full pipeline: parse, transform, safety gates, push (or --dry-run)",
@@ -284,6 +417,7 @@ def build_parser() -> argparse.ArgumentParser:
 _HANDLERS = {
     "validate-config": cmd_validate_config,
     "gen-schema": cmd_gen_schema,
+    "probe-nessus": cmd_probe_nessus,
     "run": cmd_run,
 }
 
@@ -305,6 +439,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     except TransformError as exc:
         print(f"[DATA ERROR] {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
+    except NessusApiError as exc:
+        print(f"[NESSUS ERROR] {exc}", file=sys.stderr)
+        return EXIT_NESSUS_ERROR
     except DrataApiError as exc:
         print(f"[DRATA ERROR] {exc}", file=sys.stderr)
         return EXIT_DRATA_ERROR
