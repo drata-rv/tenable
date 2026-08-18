@@ -21,6 +21,9 @@ logs/
 # local Claude Code overrides — not shared with future contributors
 .claude/settings.local.json
 
+# build-loop working notes — not part of the spec'd deliverable
+PROGRESS.md
+
 # python
 __pycache__/
 *.py[cod]
