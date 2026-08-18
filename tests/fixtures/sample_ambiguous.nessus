@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-authored fixture. Synthetic data only (RFC 5737 TEST-NET-3 range,
+  .example.internal FQDN). Proves the same compliance-check-name text
+  appearing on two separate ReportItem elements for one host is surfaced
+  as two distinct ComplianceItems by the parser — no dedup, no
+  last-write-wins. Downstream transform.py (a later phase) turns this
+  into an AMBIGUOUS field value; this parser's only job is to not hide it.
+-->
+<NessusClientData_v2>
+  <Report name="CIS Workstation Audit">
+    <ReportHost name="203.0.113.77">
+      <HostProperties>
+        <tag name="host-ip">203.0.113.77</tag>
+        <tag name="netbios-name">WKS-0077</tag>
+        <tag name="host-fqdn">wks-0077.example.internal</tag>
+        <tag name="operating-system">Microsoft Windows 11 Enterprise</tag>
+        <tag name="HOST_START_TIMESTAMP">1755503000</tag>
+        <tag name="HOST_END_TIMESTAMP">1755503900</tag>
+      </HostProperties>
+      <!-- Two separate audit rules both happened to be authored with the
+           identical check-name text, firing twice on the same host with
+           conflicting results. -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="0"
+                  pluginID="21160" pluginName="Windows Compliance Checks"
+                  pluginFamily="Policy Compliance">
+        <compliance>true</compliance>
+        <cm:compliance-check-name>5.1 Ensure 'Password Policy: Minimum password length' is '14'</cm:compliance-check-name>
+        <cm:compliance-result>FAILED</cm:compliance-result>
+        <cm:compliance-actual-value>8</cm:compliance-actual-value>
+        <cm:compliance-policy-value>14</cm:compliance-policy-value>
+        <cm:compliance-audit-file>CIS_MS_Windows_11_Enterprise_v3.0.0_L1.audit</cm:compliance-audit-file>
+        <cm:compliance-reference>800-53|IA-5,CSCv8|5.2,LEVEL|1S</cm:compliance-reference>
+      </ReportItem>
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="0"
+                  pluginID="21161" pluginName="Windows Compliance Checks"
+                  pluginFamily="Policy Compliance">
+        <compliance>true</compliance>
+        <cm:compliance-check-name>5.1 Ensure 'Password Policy: Minimum password length' is '14'</cm:compliance-check-name>
+        <cm:compliance-result>PASSED</cm:compliance-result>
+        <cm:compliance-actual-value>14</cm:compliance-actual-value>
+        <cm:compliance-policy-value>14</cm:compliance-policy-value>
+        <cm:compliance-audit-file>CIS_MS_Windows_11_Enterprise_v3.0.0_L1.audit</cm:compliance-audit-file>
+        <cm:compliance-reference>800-53|IA-5,CSCv8|5.2,LEVEL|1S</cm:compliance-reference>
+      </ReportItem>
+      <!-- One unambiguous check on the same host, for contrast. -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="0"
+                  pluginID="21156" pluginName="Windows Compliance Checks"
+                  pluginFamily="Policy Compliance">
+        <compliance>true</compliance>
+        <cm:compliance-check-name>4.5 Ensure 'Windows Firewall: Public: Firewall state' is 'On'</cm:compliance-check-name>
+        <cm:compliance-result>PASSED</cm:compliance-result>
+        <cm:compliance-actual-value>On</cm:compliance-actual-value>
+        <cm:compliance-policy-value>On</cm:compliance-policy-value>
+        <cm:compliance-audit-file>CIS_MS_Windows_11_Enterprise_v3.0.0_L1.audit</cm:compliance-audit-file>
+        <cm:compliance-reference>800-53|SC-7,CSCv8|4.5,LEVEL|1S</cm:compliance-reference>
+      </ReportItem>
+    </ReportHost>
+  </Report>
+</NessusClientData_v2>

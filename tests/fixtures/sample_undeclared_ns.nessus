@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-authored fixture. Synthetic data only (RFC 5737 TEST-NET-2 range,
+  .example.test FQDN). Proves the cm: prefix, undeclared xmlns:cm case:
+  the root element below declares no cm namespace at all, which is the
+  real-world Nessus Professional export shape that requires
+  lxml.etree.XMLParser recover=True plus local-name-only matching
+  (spec Section 3.7).
+-->
+<NessusClientData_v2>
+  <Report name="CIS Workstation Audit">
+    <ReportHost name="198.51.100.20">
+      <HostProperties>
+        <tag name="host-ip">198.51.100.20</tag>
+        <tag name="netbios-name">WKS-0099</tag>
+        <tag name="host-fqdn">wks-0099.example.test</tag>
+        <tag name="operating-system">Microsoft Windows 11 Enterprise</tag>
+        <tag name="HOST_START_TIMESTAMP">1755501000</tag>
+        <tag name="HOST_END_TIMESTAMP">1755501900</tag>
+      </HostProperties>
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="0"
+                  pluginID="21156" pluginName="Windows Compliance Checks"
+                  pluginFamily="Policy Compliance">
+        <compliance>true</compliance>
+        <cm:compliance-check-name>4.5 Ensure 'Windows Firewall: Public: Firewall state' is 'On'</cm:compliance-check-name>
+        <cm:compliance-result>PASSED</cm:compliance-result>
+        <cm:compliance-actual-value>On</cm:compliance-actual-value>
+        <cm:compliance-policy-value>On</cm:compliance-policy-value>
+        <cm:compliance-audit-file>CIS_MS_Windows_11_Enterprise_v3.0.0_L1.audit</cm:compliance-audit-file>
+        <cm:compliance-check-id>b2c3d4e5f6</cm:compliance-check-id>
+        <cm:compliance-reference>800-53|SC-7,CSCv8|4.5,LEVEL|1S</cm:compliance-reference>
+        <cm:compliance-info>Firewall state for the public profile should be On.</cm:compliance-info>
+        <cm:compliance-solution>Set the policy value to On via Group Policy.</cm:compliance-solution>
+      </ReportItem>
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="0"
+                  pluginID="21158" pluginName="Windows Compliance Checks"
+                  pluginFamily="Policy Compliance">
+        <compliance>true</compliance>
+        <cm:compliance-check-name>18.9.47.5.1 Ensure 'Turn off Windows Defender' is 'Disabled'</cm:compliance-check-name>
+        <cm:compliance-result>FAILED</cm:compliance-result>
+        <cm:compliance-actual-value>Enabled</cm:compliance-actual-value>
+        <cm:compliance-policy-value>Disabled</cm:compliance-policy-value>
+        <cm:compliance-audit-file>CIS_MS_Windows_11_Enterprise_v3.0.0_L1.audit</cm:compliance-audit-file>
+        <cm:compliance-reference>800-53|SI-3,CSCv8|9.6,LEVEL|1S</cm:compliance-reference>
+      </ReportItem>
+    </ReportHost>
+  </Report>
+</NessusClientData_v2>

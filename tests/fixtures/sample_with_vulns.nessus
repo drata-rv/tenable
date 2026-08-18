@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-authored fixture. Synthetic data only (RFC 5737 TEST-NET-1 range,
+  .example.internal FQDN). Proves plain vulnerability ReportItem elements
+  (no <compliance>true</compliance>, no compliance-check-name child) are
+  skipped entirely and never counted as compliance items, even when mixed
+  on the same host as real compliance ReportItems (spec Section 3.7/3.6).
+-->
+<NessusClientData_v2>
+  <Report name="CIS Workstation Audit">
+    <ReportHost name="192.0.2.30">
+      <HostProperties>
+        <tag name="host-ip">192.0.2.30</tag>
+        <tag name="netbios-name">WKS-0050</tag>
+        <tag name="host-fqdn">wks-0050.example.internal</tag>
+        <tag name="operating-system">Microsoft Windows 11 Enterprise</tag>
+        <tag name="HOST_START_TIMESTAMP">1755502000</tag>
+        <tag name="HOST_END_TIMESTAMP">1755502900</tag>
+      </HostProperties>
+      <!-- Plain vulnerability ReportItem: no compliance child, no
+           compliance-check-name child. Must be skipped silently. -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="2"
+                  pluginID="99001" pluginName="Sample TLS Library Multiple Vulnerabilities"
+                  pluginFamily="General">
+        <description>The remote host is affected by multiple vulnerabilities in a sample TLS library.</description>
+        <synopsis>A sample TLS library on the remote host is affected by multiple vulnerabilities.</synopsis>
+        <risk_factor>Medium</risk_factor>
+        <cvss_base_score>5.9</cvss_base_score>
+      </ReportItem>
+      <!-- A second vulnerability ReportItem, different plugin family, still
+           no compliance markers. -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="1"
+                  pluginID="99002" pluginName="Sample OS Patch Missing"
+                  pluginFamily="Windows">
+        <description>A sample vendor patch is missing on the remote host.</description>
+        <synopsis>The remote host is missing a vendor security patch.</synopsis>
+        <risk_factor>Low</risk_factor>
+        <cvss_base_score>3.1</cvss_base_score>
+      </ReportItem>
+      <!-- Real compliance ReportItems, mixed in on the same host. -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="0"
+                  pluginID="21156" pluginName="Windows Compliance Checks"
+                  pluginFamily="Policy Compliance">
+        <compliance>true</compliance>
+        <cm:compliance-check-name>4.5 Ensure 'Windows Firewall: Public: Firewall state' is 'On'</cm:compliance-check-name>
+        <cm:compliance-result>PASSED</cm:compliance-result>
+        <cm:compliance-actual-value>On</cm:compliance-actual-value>
+        <cm:compliance-policy-value>On</cm:compliance-policy-value>
+        <cm:compliance-audit-file>CIS_MS_Windows_11_Enterprise_v3.0.0_L1.audit</cm:compliance-audit-file>
+        <cm:compliance-reference>800-53|SC-7,CSCv8|4.5,LEVEL|1S</cm:compliance-reference>
+      </ReportItem>
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="0"
+                  pluginID="21157" pluginName="Windows Compliance Checks"
+                  pluginFamily="Policy Compliance">
+        <compliance>true</compliance>
+        <cm:compliance-check-name>2.3.1.1 Ensure 'Accounts: Administrator account status' is 'Disabled'</cm:compliance-check-name>
+        <cm:compliance-result>PASSED</cm:compliance-result>
+        <cm:compliance-actual-value>Disabled</cm:compliance-actual-value>
+        <cm:compliance-policy-value>Disabled</cm:compliance-policy-value>
+        <cm:compliance-audit-file>CIS_MS_Windows_11_Enterprise_v3.0.0_L1.audit</cm:compliance-audit-file>
+        <cm:compliance-reference>800-53|AC-2,CSCv8|5.2,LEVEL|1S</cm:compliance-reference>
+      </ReportItem>
+    </ReportHost>
+  </Report>
+</NessusClientData_v2>
