@@ -1,0 +1,29 @@
+# Test-only checks manifest matching tests/fixtures/sample_small.nessus
+# exactly. Not the operator-facing example — that's config/checks.example.yaml.
+schema_version: 1
+audit_file: CIS_MS_Windows_11_Enterprise_v3.0.0_L1.audit
+
+checks:
+  - field: cis_4_5_firewall_public_state
+    label: "CIS 4.5 — Windows Firewall public profile enabled"
+    match:
+      check_name_exact: "4.5 Ensure 'Windows Firewall: Public: Firewall state' is 'On'"
+    required: true
+
+  - field: cis_4_5_firewall_private_state
+    label: "CIS 4.5 — Windows Firewall private profile enabled"
+    match:
+      check_name_prefix: "4.5 Ensure 'Windows Firewall: Private: Firewall state'"
+    required: true
+
+  - field: cis_2_3_1_1_administrator_account_disabled
+    label: "CIS 2.3.1.1 — Local Administrator account disabled"
+    match:
+      check_name_exact: "2.3.1.1 Ensure 'Accounts: Administrator account status' is 'Disabled'"
+    required: true
+
+  - field: windows_defender_not_disabled
+    label: "CIS 18.9.47.5.1 — Windows Defender not turned off"
+    match:
+      check_name_contains: "Turn off Windows Defender"
+    required: false

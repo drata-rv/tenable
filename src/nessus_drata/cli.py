@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
-from .config import AppConfig, ConfigError, load_config, redact
+from .config import AppConfig, ConfigError, load_checks_manifest, load_config, redact
+from .schema_gen import generate_schema
 
 EXIT_OK = 0
 EXIT_UNEXPECTED = 1
@@ -51,6 +53,16 @@ def cmd_validate_config(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_gen_schema(args: argparse.Namespace) -> int:
+    checks = load_checks_manifest(Path(args.checks))
+    schema = generate_schema(checks)
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(schema, indent=2) + "\n")
+    print(f"Wrote schema ({len(checks)} check field(s)) to {out_path}")
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m nessus_drata.cli")
     parser.add_argument("--config", default="config/config.yaml")
@@ -64,12 +76,18 @@ def build_parser() -> argparse.ArgumentParser:
         "validate-config",
         help="Load config + manifest, validate field names, print resolved settings redacted",
     )
+    gen_schema_parser = sub.add_parser(
+        "gen-schema",
+        help="Emit the Drata JSON schema from the checks manifest. No network.",
+    )
+    gen_schema_parser.add_argument("--out", default="artifacts/schema.json")
 
     return parser
 
 
 _HANDLERS = {
     "validate-config": cmd_validate_config,
+    "gen-schema": cmd_gen_schema,
 }
 
 

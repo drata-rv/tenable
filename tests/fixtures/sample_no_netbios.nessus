@@ -1,12 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Hand-authored fixture. Synthetic data only (RFC 5737 TEST-NET-2 range,
-  .example.internal FQDN). Proves the identity fallback chain has what it
-  needs when netbios-name is absent: HostProperties carries host-fqdn and
-  host-ip but no netbios-name tag at all. Actual fallback resolution to
-  hostname/id is transform.py's job in a later phase — this fixture only
-  proves the parser surfaces the raw candidates correctly (netbios_name is
-  None, the other two are populated).
+  .example.internal FQDN). Proves the full Section 4.4 identity fallback
+  chain across two hosts:
+    - ReportHost 1: no netbios-name, but host-fqdn AND host-ip both present
+      -> falls back to the fqdn tier (netbios_name is None, others populated;
+      this tier does NOT increment identity_fallbacks per spec 4.4).
+    - ReportHost 2: no netbios-name AND no host-fqdn, only host-ip
+      -> falls all the way to the ip tier, which IS the tier spec 4.4 ties
+      identity_fallbacks to ("When id falls back to IP, increment
+      identity_fallbacks").
+  Actual fallback resolution to hostname/id and the identity_fallbacks
+  counter are transform.py's job (Phase 3) — this fixture only proves the
+  parser surfaces the raw candidates correctly for both hosts.
 -->
 <NessusClientData_v2>
   <Report name="CIS Workstation Audit">
@@ -17,6 +23,25 @@
         <tag name="operating-system">Microsoft Windows 11 Enterprise</tag>
         <tag name="HOST_START_TIMESTAMP">1755504000</tag>
         <tag name="HOST_END_TIMESTAMP">1755504900</tag>
+      </HostProperties>
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="0"
+                  pluginID="21156" pluginName="Windows Compliance Checks"
+                  pluginFamily="Policy Compliance">
+        <compliance>true</compliance>
+        <cm:compliance-check-name>4.5 Ensure 'Windows Firewall: Public: Firewall state' is 'On'</cm:compliance-check-name>
+        <cm:compliance-result>PASSED</cm:compliance-result>
+        <cm:compliance-actual-value>On</cm:compliance-actual-value>
+        <cm:compliance-policy-value>On</cm:compliance-policy-value>
+        <cm:compliance-audit-file>CIS_MS_Windows_11_Enterprise_v3.0.0_L1.audit</cm:compliance-audit-file>
+        <cm:compliance-reference>800-53|SC-7,CSCv8|4.5,LEVEL|1S</cm:compliance-reference>
+      </ReportItem>
+    </ReportHost>
+    <ReportHost name="198.51.100.56">
+      <HostProperties>
+        <tag name="host-ip">198.51.100.56</tag>
+        <tag name="operating-system">Microsoft Windows 11 Enterprise</tag>
+        <tag name="HOST_START_TIMESTAMP">1755504010</tag>
+        <tag name="HOST_END_TIMESTAMP">1755504910</tag>
       </HostProperties>
       <ReportItem port="0" svc_name="general" protocol="tcp" severity="0"
                   pluginID="21156" pluginName="Windows Compliance Checks"

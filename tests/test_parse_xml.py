@@ -113,10 +113,16 @@ def test_sample_ambiguous_yields_two_items_same_check_name():
 
 def test_sample_no_netbios_identity_fallback_candidates():
     results = list(parse_nessus_xml(FIXTURES_DIR / "sample_no_netbios.nessus"))
-    assert len(results) == 1
+    assert len(results) == 2
 
-    host = results[0]
-    candidates = host.host_key_candidates
+    fqdn_tier_host = results[0]
+    candidates = fqdn_tier_host.host_key_candidates
     assert candidates.netbios_name is None
     assert candidates.host_fqdn == "wks-unregistered-55.example.internal"
     assert candidates.host_ip == "198.51.100.55"
+
+    ip_tier_host = results[1]
+    ip_candidates = ip_tier_host.host_key_candidates
+    assert ip_candidates.netbios_name is None
+    assert ip_candidates.host_fqdn is None
+    assert ip_candidates.host_ip == "198.51.100.56"
