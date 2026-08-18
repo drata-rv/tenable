@@ -17,6 +17,7 @@ drata:
   use_sessions: true
   batch_size: 25
   max_retries: 5
+  record_id_prefix: "nessus"     # fixed permanently at go-live; see spec Section 14
 
 safety:
   min_hosts: 50

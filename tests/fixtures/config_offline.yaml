@@ -1,0 +1,39 @@
+# Test-only config for offline `run --fixtures --dry-run` acceptance tests.
+# config/config.example.yaml intentionally mirrors spec Section 7.1's
+# Windows-deployment paths verbatim (validated by test_config.py's
+# acceptance-test-1 case) — those paths aren't meant to be writable on a
+# POSIX dev/CI box. This fixture keeps everything under a relative,
+# gitignored `artifacts/`/`state/`/`logs/` so offline pipeline tests don't
+# scribble a literal "C:" directory into the repo root.
+nessus:
+  base_url: "https://localhost:8834"
+  verify_tls: true
+  ca_bundle: null
+  scan_id: 47
+  scan_name_exact: null
+  use_latest_history: true
+  export_format: "nessus"
+  export_timeout_seconds: 900
+  connect_timeout_seconds: 10
+  read_timeout_seconds: 120
+
+drata:
+  base_url: "https://public-api.drata.com"
+  connection_id: 0
+  resource_id: 0
+  use_sessions: true
+  batch_size: 25
+  max_retries: 5
+  record_id_prefix: "nessus"
+
+safety:
+  min_hosts: 1
+  max_shrink_ratio: 0.8
+  min_manifest_coverage_pct: 90
+
+runtime:
+  artifacts_dir: "artifacts"
+  state_dir: "state"
+  log_dir: "logs"
+  keep_raw_exports_days: 30
+  keep_payloads_days: 14

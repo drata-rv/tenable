@@ -65,6 +65,13 @@ class DrataConfig:
     use_sessions: bool = True
     batch_size: int = 25
     max_retries: int = 5
+    # Spec gap: Section 4.4 references `drata.record_id_prefix` by name
+    # ("id = drata.record_id_prefix + '-' + slug(host_key)") and Section 14
+    # lists its assumed default ("nessus", fixed permanently at go-live), but
+    # the Section 7.1 config.yaml example never actually lists this key.
+    # Filling the gap with the spec's own stated default rather than
+    # inventing an unrelated one.
+    record_id_prefix: str = "nessus"
 
 
 @dataclass(frozen=True)
@@ -155,6 +162,7 @@ def _build_drata(raw: dict) -> DrataConfig:
         use_sessions=raw.get("use_sessions", defaults.use_sessions),
         batch_size=raw.get("batch_size", defaults.batch_size),
         max_retries=raw.get("max_retries", defaults.max_retries),
+        record_id_prefix=raw.get("record_id_prefix", defaults.record_id_prefix),
     )
 
 
@@ -246,6 +254,16 @@ def load_checks_manifest(path: Path) -> tuple[CheckEntry, ...]:
     return tuple(entries)
 
 
+def load_manifest_audit_file(path: Path) -> Optional[str]:
+    """The checks manifest's top-level `audit_file` key. Separate from
+    load_checks_manifest (which returns only the CheckEntry tuple) to avoid
+    changing that function's already-tested return shape.
+    """
+    raw = _load_yaml(path, "checks manifest")
+    audit_file = raw.get("audit_file")
+    return audit_file if isinstance(audit_file, str) else None
+
+
 def load_secrets() -> Secrets:
     missing = [name for name in REQUIRED_ENV_VARS if not os.environ.get(name)]
     if missing:
@@ -257,10 +275,27 @@ def load_secrets() -> Secrets:
     )
 
 
-def load_config(config_path: Path, checks_path: Path) -> AppConfig:
+def get_required_env(name: str) -> str:
+    """Fetch a single required secret on demand, raising ConfigError naming
+    just that variable. Used by the `run` command so --fixtures/--dry-run
+    combinations only demand the specific secrets they actually need, never
+    all three unconditionally (see load_config's require_secrets param) --
+    fixture mode must work with zero credentials (spec Section 2 #4, Section
+    10), which validate-config's all-three-required contract (Section 7.2)
+    does not have to honor.
+    """
+    value = os.environ.get(name)
+    if not value:
+        raise ConfigError(f"missing required environment variable: {name}")
+    return value
+
+
+def load_config(
+    config_path: Path, checks_path: Path, *, require_secrets: bool = True
+) -> AppConfig:
     raw = _load_yaml(config_path, "config")
     checks = load_checks_manifest(checks_path)
-    secrets = load_secrets()
+    secrets = load_secrets() if require_secrets else None
     return AppConfig(
         nessus=_build_nessus(raw.get("nessus", {}) or {}),
         drata=_build_drata(raw.get("drata", {}) or {}),
