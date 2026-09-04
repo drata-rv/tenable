@@ -109,7 +109,18 @@ def transform_host_results(
         host_key, used_ip_fallback = _resolve_host_key(host.host_key_candidates)
         if used_ip_fallback:
             identity_fallbacks += 1
-        record_id = f"{record_id_prefix}-{_slug(host_key)}"
+        host_key_slug = _slug(host_key)
+        if not host_key_slug:
+            # An all-symbol/all-dash host_key (e.g. "###") slugs to "",
+            # producing a degenerate "<prefix>-" id that gives no
+            # diagnostic clue which host it came from and risks colliding
+            # with another equally-degenerate host. Fail loudly instead of
+            # emitting unusable evidence identity.
+            raise TransformError(
+                f"host_key {host_key!r} slugs to an empty string; cannot "
+                f"build a stable record id"
+            )
+        record_id = f"{record_id_prefix}-{host_key_slug}"
 
         # Field order below matches the spec Section 4.6 example exactly.
         # Rollup keys are reserved here with placeholder values and updated

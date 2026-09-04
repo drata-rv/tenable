@@ -6,9 +6,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from nessus_drata.config import CheckEntry
+from nessus_drata.models import HostKeyCandidates, HostResult
 from nessus_drata.parse_nessus_xml import parse_nessus_xml
-from nessus_drata.transform import transform_host_results
+from nessus_drata.transform import TransformError, transform_host_results
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -88,3 +91,20 @@ def test_sample_no_netbios_identity_fallback_chain_and_counter():
     assert ip_tier_record["id"] == "nessus-198-51-100-56"
 
     assert result.summary.identity_fallbacks == 1
+
+
+def test_all_symbol_host_key_raises_instead_of_producing_empty_slug():
+    """Review finding: a host_key that slugs to "" (e.g. an all-symbol
+    netbios-name) must fail loudly, not silently produce a degenerate
+    "<prefix>-" record id with no diagnostic value.
+    """
+    host = HostResult(
+        host_key_candidates=HostKeyCandidates(
+            netbios_name="###", host_fqdn=None, host_ip=None
+        ),
+        host_properties={"host-ip": "203.0.113.200"},
+        compliance_items=(),
+        source_fidelity="full",
+    )
+    with pytest.raises(TransformError, match="slugs to an empty string"):
+        transform_host_results([host], [], **_COMMON_KWARGS)

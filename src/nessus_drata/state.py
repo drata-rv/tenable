@@ -70,11 +70,21 @@ def _pid_is_running(pid: int) -> bool:
         import ctypes
 
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        ERROR_ACCESS_DENIED = 5
         handle = ctypes.windll.kernel32.OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION, False, pid
         )
         if handle:
             ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        # OpenProcess returns NULL both when the PID doesn't exist AND when
+        # access is denied for a live process this token can't query (e.g.
+        # the collector runs as a service account but a second invocation
+        # happens under an admin's interactive/elevated session). Treating
+        # every failure as "not running" would reclaim a lock held by a
+        # genuinely live process — mirror the POSIX branch's PermissionError
+        # handling below, which treats "exists but not ours" as running.
+        if ctypes.windll.kernel32.GetLastError() == ERROR_ACCESS_DENIED:
             return True
         return False
     try:

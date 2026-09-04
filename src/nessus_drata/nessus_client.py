@@ -62,8 +62,10 @@ class NessusExportTimeoutError(NessusApiError):
 def _redact_key(key: str) -> str:
     """Redact a credential to its last 4 characters, e.g. '****abcd'. Never
     let a raw access_key/secret_key value reach an exception message or log
-    line (spec Section 2 #6 / 6.4)."""
-    if not key:
+    line (spec Section 2 #6 / 6.4). A credential at or under 4 characters is
+    masked completely rather than shown in full.
+    """
+    if not key or len(key) <= 4:
         return "****"
     return f"****{key[-4:]}"
 

@@ -88,9 +88,21 @@ def _build_compliance_item(report_item) -> Optional[ComplianceItem]:
         # name. Skip rather than yield a ComplianceItem with an empty name.
         return None
 
+    # compliance-result missing or empty (a self-closing <cm:compliance-result/>
+    # is a real shape this fixture set already demonstrates for other fields,
+    # e.g. sample_small.nessus's <cm:compliance-actual-value/>) means the
+    # result genuinely cannot be determined -- normalize to "ERROR" rather
+    # than emit None, which would (a) violate ComplianceItem.result's non-
+    # Optional str contract and (b) surface as JSON null against a
+    # non-nullable schema field on push (spec Section 5.4: 400 schema
+    # validation failure). ERROR is exactly the spec-defined outcome for
+    # "could not be conclusively evaluated" (Section 3.6).
+    raw_result = _text_or_none(_find_child(report_item, "compliance-result"))
+    result = raw_result if raw_result else "ERROR"
+
     return ComplianceItem(
         check_name=check_name,
-        result=_text_or_none(_find_child(report_item, "compliance-result")),
+        result=result,
         actual_value=_text_or_none(_find_child(report_item, "compliance-actual-value")),
         policy_value=_text_or_none(_find_child(report_item, "compliance-policy-value")),
         audit_file=_text_or_none(_find_child(report_item, "compliance-audit-file")),

@@ -126,3 +126,42 @@ def test_sample_no_netbios_identity_fallback_candidates():
     assert ip_candidates.netbios_name is None
     assert ip_candidates.host_fqdn is None
     assert ip_candidates.host_ip == "198.51.100.56"
+
+
+def test_missing_or_empty_compliance_result_normalizes_to_error(tmp_path):
+    """Review finding: a self-closing/empty <cm:compliance-result/> (a real
+    shape this fixture set already demonstrates for other compliance-*
+    fields, e.g. sample_small.nessus's actual-value) must not surface as
+    None -- it must normalize to "ERROR" (spec 3.6's own outcome for "could
+    not be conclusively evaluated"), never silently pass through as null.
+    """
+    xml_path = tmp_path / "missing_result.nessus"
+    xml_path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<NessusClientData_v2>
+  <Report name="Test">
+    <ReportHost name="203.0.113.99">
+      <HostProperties>
+        <tag name="host-ip">203.0.113.99</tag>
+        <tag name="netbios-name">WKS-0099</tag>
+      </HostProperties>
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="0">
+        <compliance>true</compliance>
+        <cm:compliance-check-name>Some check with no result tag</cm:compliance-check-name>
+      </ReportItem>
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="0">
+        <compliance>true</compliance>
+        <cm:compliance-check-name>Some check with a self-closing result tag</cm:compliance-check-name>
+        <cm:compliance-result/>
+      </ReportItem>
+    </ReportHost>
+  </Report>
+</NessusClientData_v2>
+"""
+    )
+    results = list(parse_nessus_xml(xml_path))
+    assert len(results) == 1
+    items = results[0].compliance_items
+    assert len(items) == 2
+    assert all(item.result == "ERROR" for item in items)
+    assert all(isinstance(item.result, str) for item in items)

@@ -149,6 +149,32 @@ def test_acceptance_17_second_run_while_lock_held_exits_six(tmp_path):
     assert not (tmp_path / "artifacts" / "payloads").exists()
 
 
+def test_force_and_allow_degraded_session_work_after_run(tmp_path):
+    """Review finding: --force/--allow-degraded-session must actually work
+    when placed after `run` (where --dry-run/--fixtures already live) --
+    they previously only parsed correctly before the subcommand, and (per a
+    since-corrected draft of this same fix) briefly risked silently
+    resetting to False if defined on both parsers instead of only here.
+    """
+    result = _run_cli(
+        [
+            "--config",
+            str(REPO_ROOT / CONFIG),
+            "--checks",
+            str(REPO_ROOT / CHECKS),
+            "run",
+            "--fixtures",
+            str(REPO_ROOT / FIXTURE),
+            "--dry-run",
+            "--force",
+            "--allow-degraded-session",
+        ],
+        env=os.environ.copy(),
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
+
+
 def test_acceptance_18_dead_pid_lock_is_reclaimed_by_cli(tmp_path):
     env = os.environ.copy()
     state_dir = tmp_path / "state"

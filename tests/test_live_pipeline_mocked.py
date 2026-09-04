@@ -129,7 +129,14 @@ def _register_drata_mocks(rsps: responses.RequestsMock, session_action_capture: 
     )
 
     def batch_callback(request):
-        return (200, {}, json.dumps({"data": []}))
+        sent = json.loads(request.body)["data"]
+        # Realistic per-record echo: first record "created" (201), the
+        # rest "updated" (200) -- exercises count_record_outcomes end to end.
+        results = [
+            {"id": r["id"], "statusCode": 201 if i == 0 else 200}
+            for i, r in enumerate(sent)
+        ]
+        return (200, {}, json.dumps({"data": results}))
 
     def action_callback(request):
         body = json.loads(request.body)
@@ -179,6 +186,10 @@ def test_live_pipeline_completes_session_end_to_end(tmp_path, monkeypatch):
     assert report["session_action"] == "complete"
     assert report["parse_mode"] == "xml_full"
     assert report["record_count"] == 3
+    # Review finding: these were previously hardcoded 0 regardless of the
+    # actual upload response. batch_callback echoes 1 created + 2 updated.
+    assert report["records_created"] == 1
+    assert report["records_updated"] == 2
 
 
 @responses.activate
@@ -291,6 +302,73 @@ def test_live_pipeline_cancels_real_session_when_batch_upload_fails(tmp_path, mo
     assert state.last_record_count is None
 
 
+@responses.activate
+def test_409_conflict_retries_batch_once_then_succeeds(tmp_path, monkeypatch):
+    """Review finding: spec 5.4's "409 -> cancel stale session, retry once,
+    then terminal" was never implemented by any caller. This proves the
+    fix: a 409 on the first batch upload attempt triggers a stale-session
+    cleanup pass and exactly one retry of that same batch, which succeeds.
+    """
+    monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
+    monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
+    monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nessus_drata.nessus_client.time.sleep", lambda _s: None)
+
+    config_path = _write_config(tmp_path)
+    _register_nessus_mocks(responses)
+
+    import re
+
+    # list_sessions is called once up front and once more during the 409
+    # retry's stale-session cleanup -- both empty, nothing to cancel.
+    responses.add(
+        responses.GET,
+        f"{DRATA_BASE}/public/v2/custom-connections/99/resources/5/sessions",
+        json=[],
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        f"{DRATA_BASE}/public/v2/custom-connections/99/resources/5/sessions",
+        json=[],
+        status=200,
+    )
+
+    session_batch_re = re.compile(
+        rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/[^/]+$"
+    )
+    session_action_re = re.compile(
+        rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/[^/]+/actions$"
+    )
+
+    # First attempt: 409 conflict. Second attempt (the retry): succeeds.
+    responses.add(
+        responses.POST, session_batch_re, json={"message": "session state conflict"}, status=409
+    )
+    responses.add(responses.POST, session_batch_re, json={"data": []}, status=200)
+
+    session_actions: list = []
+
+    def action_callback(request):
+        body = json.loads(request.body)
+        session_actions.append(body.get("action"))
+        return (200, {}, json.dumps({}))
+
+    responses.add_callback(responses.POST, session_action_re, callback=action_callback)
+
+    exit_code = cli.main(["--config", str(config_path), "--checks", str(CHECKS), "run"])
+
+    assert exit_code == 0, "expected the 409 retry to succeed and the session to complete"
+    assert session_actions == ["complete"]
+
+    # Exactly 2 POSTs to the batch endpoint (original + one retry, not more).
+    batch_calls = [
+        c for c in responses.calls if session_batch_re.match(c.request.url or "")
+    ]
+    assert len(batch_calls) == 2
+
+
 def _write_csv_config(tmp_path: Path) -> Path:
     """Like _write_config, but export_format: csv and manifest-coverage gate
     disabled (min_manifest_coverage_pct: 0) so these tests isolate the
@@ -381,8 +459,8 @@ def test_csv_degraded_session_proceeds_with_allow_degraded_flag(tmp_path, monkey
             str(config_path),
             "--checks",
             str(CHECKS),
-            "--allow-degraded-session",
             "run",
+            "--allow-degraded-session",
         ]
     )
 

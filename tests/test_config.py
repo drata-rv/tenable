@@ -139,3 +139,17 @@ def test_validate_config_missing_env_var_exits_two(tmp_path):
     )
     assert result.returncode == 2
     assert "DRATA_API_KEY" in result.stderr
+
+
+def test_redact_masks_short_secrets_completely():
+    """Review finding: redact() must not expose a secret whole just because
+    it's 4 characters or shorter -- "last 4 characters" is only a partial
+    mask when the secret is longer than that.
+    """
+    from nessus_drata.config import redact
+
+    assert redact("") == "****"
+    assert redact("a") == "****"
+    assert redact("abcd") == "****"
+    assert redact("abcde") == "****bcde"
+    assert redact("a-real-looking-secret-key-12345") == "****2345"

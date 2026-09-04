@@ -93,3 +93,45 @@ def test_acceptance_18_dead_pid_lock_is_reclaimed(tmp_path):
     with acquire_lock(tmp_path):
         assert int(lock_path.read_text().strip()) == os.getpid()
     assert not lock_path.exists()
+
+
+def test_windows_pid_liveness_treats_access_denied_as_running(monkeypatch):
+    """Review finding: OpenProcess returns a NULL handle both when the PID
+    doesn't exist AND when access is denied for a live process this token
+    can't query. Without distinguishing these, a second run under a
+    different security context (e.g. an admin's interactive session while
+    the service-account run is genuinely in progress) would treat a live
+    process's lock as stale and reclaim it -- exactly the double-run bug
+    the lock exists to prevent. The real ctypes.windll doesn't exist on
+    macOS, so it's injected as a fake to exercise the win32 code path here.
+    """
+    import ctypes
+    import types
+
+    import nessus_drata.state as state_module
+
+    monkeypatch.setattr(state_module.sys, "platform", "win32")
+
+    class FakeKernel32:
+        def __init__(self, last_error):
+            self._last_error = last_error
+
+        def OpenProcess(self, *_args):
+            return 0  # NULL handle: OpenProcess failed either way
+
+        def GetLastError(self):
+            return self._last_error
+
+        def CloseHandle(self, _handle):
+            pass
+
+    ERROR_ACCESS_DENIED = 5
+    ERROR_INVALID_PARAMETER = 87
+
+    fake_windll_denied = types.SimpleNamespace(kernel32=FakeKernel32(ERROR_ACCESS_DENIED))
+    monkeypatch.setattr(ctypes, "windll", fake_windll_denied, raising=False)
+    assert state_module._pid_is_running(4242) is True
+
+    fake_windll_other = types.SimpleNamespace(kernel32=FakeKernel32(ERROR_INVALID_PARAMETER))
+    monkeypatch.setattr(ctypes, "windll", fake_windll_other, raising=False)
+    assert state_module._pid_is_running(4242) is False

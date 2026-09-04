@@ -117,11 +117,16 @@ class AppConfig:
 
 
 def redact(value: str) -> str:
-    """Redact a secret to its last 4 characters, e.g. '****ab12'."""
-    if not value:
+    """Redact a secret to its last 4 characters, e.g. '****ab12'.
+
+    A secret at or under 4 characters is masked completely rather than
+    shown in full -- "redact to last 4 characters" implicitly assumes the
+    secret is longer than that; real API keys always are, but this must
+    never be the path that leaks a short one whole.
+    """
+    if not value or len(value) <= 4:
         return "****"
-    tail = value[-4:] if len(value) >= 4 else value
-    return f"****{tail}"
+    return f"****{value[-4:]}"
 
 
 def _load_yaml(path: Path, kind: str) -> dict:

@@ -7,9 +7,10 @@ host-grain evidence records for Custom Tests.
 Read-only against Nessus. Never launches, stops, or configures a scan — it
 consumes results that already exist.
 
-See `Nessus_OnPrem_to_Drata_Custom_Connection_MVP_Spec.md` for the full
-technical contract (API endpoints, schema, exit codes, acceptance tests) and
-`CLAUDE.md` for the build process this repository follows.
+The full technical contract (API endpoints, schema, exit codes, acceptance
+tests) lives in the Tenable Nessus → Drata Custom Connection MVP build
+specification maintained by the Drata Solutions Architects Team; it is not
+part of this repository. See the Runbook section there for one-time setup.
 
 ## Quick start (offline, no credentials)
 

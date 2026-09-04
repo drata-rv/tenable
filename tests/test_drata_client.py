@@ -15,6 +15,7 @@ from nessus_drata.drata_client import (
     DrataApiError,
     DrataClient,
     DrataResponseError,
+    count_record_outcomes,
 )
 
 BASE_URL = "https://public-api.drata.com"
@@ -531,3 +532,79 @@ def test_api_key_never_appears_in_400_exception_string():
 
 def test_drata_response_error_is_a_drata_api_error():
     assert issubclass(DrataResponseError, DrataApiError)
+
+
+# ---------------------------------------------------------------------------
+# Connection-level failures (review finding: these were leaking as bare
+# requests exceptions, misclassified as exit code 1 instead of 4)
+# ---------------------------------------------------------------------------
+
+
+@responses.activate
+def test_connection_error_is_wrapped_as_drata_api_error():
+    import requests
+
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/public/v2/custom-connections/1?expand[]=customResources",
+        body=requests.exceptions.ConnectionError("simulated DNS/connection failure"),
+    )
+    client = make_client()
+
+    with pytest.raises(DrataApiError) as exc_info:
+        client.get_connection(1)
+
+    assert not isinstance(exc_info.value, DrataResponseError)
+    assert "get_connection" in str(exc_info.value) or "/custom-connections/1" in str(exc_info.value)
+
+
+def test_count_record_outcomes_counts_created_and_updated():
+    body = {
+        "data": [
+            {"id": "a", "statusCode": 201},
+            {"id": "b", "statusCode": 200},
+            {"id": "c", "statusCode": 201},
+            {"id": "d", "statusCode": 200},
+            {"id": "e", "statusCode": 200},
+        ]
+    }
+    created, updated = count_record_outcomes(body)
+    assert created == 2
+    assert updated == 3
+
+
+def test_count_record_outcomes_unrecognized_shape_returns_zero_zero():
+    assert count_record_outcomes({"summary": "ok"}) == (0, 0)
+    assert count_record_outcomes(None) == (0, 0)
+    assert count_record_outcomes([]) == (0, 0)
+
+
+@responses.activate
+def test_upload_session_batch_logs_warning_on_unrecognized_response_shape(caplog):
+    import logging as _logging
+
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/public/v2/custom-connections/1/resources/2/sessions/sess-1",
+        json={"summary": "accepted, no per-record detail"},
+        status=200,
+    )
+    client = make_client()
+    with caplog.at_level(_logging.WARNING, logger="nessus_drata.drata_client"):
+        client.upload_session_batch(1, 2, "sess-1", [{"id": "host-1"}])
+    assert any("did not match any recognized per-record shape" in r.message for r in caplog.records)
+
+
+@responses.activate
+def test_timeout_is_wrapped_as_drata_api_error_not_bare_exception():
+    import requests
+
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/public/v2/custom-connections/1/resources/2/sessions/sess-1/actions",
+        body=requests.exceptions.ConnectTimeout("simulated timeout"),
+    )
+    client = make_client()
+
+    with pytest.raises(DrataApiError):
+        client.complete_session(1, 2, "sess-1")

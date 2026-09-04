@@ -20,7 +20,7 @@ from .config import (
     load_manifest_audit_file,
     redact,
 )
-from .drata_client import DrataApiError, DrataClient
+from .drata_client import DrataApiError, DrataClient, DrataResponseError, count_record_outcomes
 from .logging_setup import setup_logging
 from .nessus_client import NessusApiError, NessusClient
 from .parse_nessus_csv import parse_nessus_csv
@@ -281,18 +281,99 @@ def _parse_scan_input(
     return _live_nessus_export(config, run_id)
 
 
+def _cancel_other_sessions(
+    client: DrataClient, config: AppConfig, session_id: str, logger: logging.Logger
+) -> None:
+    """Only one session may be IN_PROGRESS at a time (spec 5.3). Cancel any
+    OTHER stale in-progress session — never our own about-to-be-(re)used
+    session_id, since re-running the identical scan is a legitimate
+    retry/continuation, not a stale leftover.
+
+    The session-list entry's own id field name is unverified against the
+    live API (the spec doesn't name it) — checks a handful of plausible key
+    names and logs loudly, rather than silently skipping, when none match,
+    so an unrecognized response shape doesn't leave a real stale session
+    uncancelled without a trace.
+    """
+    existing_sessions = client.list_sessions(config.drata.connection_id, config.drata.resource_id)
+    for existing in existing_sessions:
+        other_id = (
+            existing.get("id")
+            or existing.get("sessionId")
+            or existing.get("session_id")
+            or existing.get("uuid")
+        )
+        if other_id is None:
+            logger.warning(
+                "stale-session cleanup: could not determine id for an "
+                "IN_PROGRESS session entry (unrecognized shape) -- skipping "
+                "it rather than guessing which field names an id. entry=%r",
+                existing,
+            )
+            continue
+        if other_id != session_id:
+            logger.warning("cancelling stale in-progress session %s", other_id)
+            client.cancel_session(config.drata.connection_id, config.drata.resource_id, other_id)
+
+
+def _upload_batch_with_409_retry(
+    client: DrataClient,
+    config: AppConfig,
+    session_id: str,
+    batch: list,
+    logger: logging.Logger,
+) -> tuple[bool, Optional[dict]]:
+    """Upload one batch. On a 409 (session state conflict), cancel any
+    stale session and retry this exact batch once, then terminal (spec
+    5.4: "cancel stale session, retry once, then terminal"). Returns
+    (success, response_body_or_None).
+    """
+    try:
+        body = client.upload_session_batch(
+            config.drata.connection_id, config.drata.resource_id, session_id, batch
+        )
+        return True, body
+    except DrataResponseError as exc:
+        if exc.status_code != 409:
+            logger.error("batch upload failed: %s", exc)
+            return False, None
+        logger.warning(
+            "409 conflict uploading batch to session %s; cancelling stale "
+            "session(s) and retrying this batch once",
+            session_id,
+        )
+        try:
+            _cancel_other_sessions(client, config, session_id, logger)
+            body = client.upload_session_batch(
+                config.drata.connection_id, config.drata.resource_id, session_id, batch
+            )
+            return True, body
+        except DrataApiError as retry_exc:
+            logger.error("batch upload failed after 409 retry: %s", retry_exc)
+            return False, None
+    except DrataApiError as exc:
+        logger.error("batch upload failed: %s", exc)
+        return False, None
+
+
 def _live_drata_push(
     config: AppConfig,
     records: tuple,
     parse_mode: str,
     summary,
     prior_state: LastRunState,
+    scan_id: int,
+    scan_ended_at: str,
     args: argparse.Namespace,
     logger: logging.Logger,
-) -> tuple[int, Optional[str], str, int, tuple]:
+) -> tuple[int, Optional[str], str, int, int, int, tuple]:
     """Session-based push (spec Section 5.3) with safety-gate enforcement
     (Section 5.5). Returns (exit_code, session_id, session_action,
-    batches_sent, final_gates).
+    batches_sent, records_created, records_updated, final_gates).
+
+    scan_id/scan_ended_at are the same values already resolved earlier in
+    _run_pipeline (not re-derived from records[0]) so the session id stays
+    deterministic per spec 5.3 even when records is empty.
 
     UNVERIFIED against a live Drata sandbox — no reachable instance in this
     build environment. Pending operator execution (acceptance test 22
@@ -329,20 +410,9 @@ def _live_drata_push(
         base_url=config.drata.base_url, api_key=api_key, max_retries=config.drata.max_retries
     )
 
-    scan_id_for_session = records[0]["scan_id"] if records else 0
-    scan_ended_at_for_session = records[0]["scan_ended_at"] if records else _now_iso()
-    session_id = _session_id_for(scan_id_for_session, scan_ended_at_for_session)
+    session_id = _session_id_for(scan_id, scan_ended_at)
 
-    # Only one session may be IN_PROGRESS at a time (spec 5.3). Cancel any
-    # OTHER stale in-progress session — never our own about-to-be-(re)used
-    # session_id, since re-running the identical scan is a legitimate
-    # retry/continuation, not a stale leftover.
-    existing_sessions = client.list_sessions(config.drata.connection_id, config.drata.resource_id)
-    for existing in existing_sessions:
-        other_id = existing.get("id") or existing.get("sessionId")
-        if other_id and other_id != session_id:
-            logger.warning("cancelling stale in-progress session %s", other_id)
-            client.cancel_session(config.drata.connection_id, config.drata.resource_id, other_id)
+    _cancel_other_sessions(client, config, session_id, logger)
 
     if not all_gates_passed(pre_gates):
         # No batch has been uploaded under session_id yet, so there is no
@@ -351,31 +421,49 @@ def _live_drata_push(
         # the post-upload failure path below, which does call cancel_session
         # on a session that genuinely exists.
         logger.error("safety gate(s) failed before any upload; nothing sent")
-        return EXIT_SAFETY_GATE, session_id, "aborted_pre_upload", 0, pre_gates
+        return EXIT_SAFETY_GATE, session_id, "aborted_pre_upload", 0, 0, 0, pre_gates
 
     batch_upload_results = []
     batches_sent = 0
+    records_created = 0
+    records_updated = 0
     for batch in _chunk(list(records), config.drata.batch_size):
-        try:
-            client.upload_session_batch(
-                config.drata.connection_id, config.drata.resource_id, session_id, batch
-            )
-            batch_upload_results.append(True)
-            batches_sent += 1
-        except DrataApiError as exc:
-            logger.error("batch upload failed: %s", exc)
-            batch_upload_results.append(False)
+        success, response_body = _upload_batch_with_409_retry(
+            client, config, session_id, batch, logger
+        )
+        batch_upload_results.append(success)
+        if not success:
             break  # spec: a single failed batch aborts completion
+        batches_sent += 1
+        created, updated = count_record_outcomes(response_body)
+        records_created += created
+        records_updated += updated
 
     final_gates = _evaluate(batch_upload_results=batch_upload_results)
 
     if all_gates_passed(final_gates):
         client.complete_session(config.drata.connection_id, config.drata.resource_id, session_id)
-        return EXIT_OK, session_id, "complete", batches_sent, final_gates
+        return (
+            EXIT_OK,
+            session_id,
+            "complete",
+            batches_sent,
+            records_created,
+            records_updated,
+            final_gates,
+        )
 
     logger.error("safety gate(s) failed after upload; cancelling session %s", session_id)
     client.cancel_session(config.drata.connection_id, config.drata.resource_id, session_id)
-    return EXIT_SAFETY_GATE, session_id, "cancel", batches_sent, final_gates
+    return (
+        EXIT_SAFETY_GATE,
+        session_id,
+        "cancel",
+        batches_sent,
+        records_created,
+        records_updated,
+        final_gates,
+    )
 
 
 def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.Logger) -> int:
@@ -437,9 +525,19 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
         session_id = None
         session_action = None
         batches_sent = 0
+        records_created = 0
+        records_updated = 0
     else:
-        exit_code, session_id, session_action, batches_sent, gates = _live_drata_push(
-            config, records, parse_mode, summary, prior_state, args, logger
+        (
+            exit_code,
+            session_id,
+            session_action,
+            batches_sent,
+            records_created,
+            records_updated,
+            gates,
+        ) = _live_drata_push(
+            config, records, parse_mode, summary, prior_state, scan_id, scan_ended_at, args, logger
         )
 
     finished_at = _now_iso()
@@ -471,8 +569,8 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
         identity_fallbacks=summary.identity_fallbacks,
         duplicate_ids=summary.duplicate_ids,
         batches_sent=batches_sent,
-        records_created=0,
-        records_updated=0,
+        records_created=records_created,
+        records_updated=records_updated,
         session_id=session_id,
         session_action=session_action,
         safety_gates=tuple(
@@ -519,8 +617,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="config/config.yaml")
     parser.add_argument("--checks", default="config/checks.yaml")
     parser.add_argument("--log-level", default="INFO")
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--allow-degraded-session", action="store_true")
+    # --force and --allow-degraded-session deliberately do NOT live on the
+    # top-level parser (only run_parser defines them, below). argparse's
+    # subparser mechanism parses each subcommand's own arguments into a
+    # FRESH namespace and then copies every one of its dests back onto the
+    # parent namespace (see _SubParsersAction.__call__) -- so a dest defined
+    # on BOTH the parent and a subparser gets silently overwritten by the
+    # subparser's own default whenever the flag is supplied before the
+    # subcommand instead of after, with no error. Defining it only where
+    # it's actually used (run) makes "after run" the one unambiguous
+    # position, consistent with --dry-run/--fixtures.
 
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser(
@@ -552,6 +658,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to a .nessus or .csv fixture file; skips the Nessus client entirely",
     )
+    # --force and --allow-degraded-session live ONLY here, not on the
+    # top-level parser -- see the comment above parser.add_argument calls
+    # for why defining them on both would silently misbehave. `run` is the
+    # only command that reads either flag.
+    run_parser.add_argument("--force", action="store_true")
+    run_parser.add_argument("--allow-degraded-session", action="store_true")
 
     return parser
 

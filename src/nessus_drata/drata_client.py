@@ -17,12 +17,15 @@ Hard constraints enforced in this module (spec Section 2 / 5.1 / 5.6):
 
 from __future__ import annotations
 
+import logging
 import random
 import sys
 import time
 from typing import Any, Optional
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 # Section 5.6 checklist, printed verbatim to stderr on 401 code 10000.
 DRATA_401_10000_CHECKLIST = """\
@@ -57,8 +60,10 @@ class DrataResponseError(DrataApiError):
 
 
 def _redact_key(api_key: str) -> str:
-    """Redact an API key to its last 4 characters, e.g. '****abcd'."""
-    if not api_key:
+    """Redact an API key to its last 4 characters, e.g. '****abcd'. A key at
+    or under 4 characters is masked completely rather than shown in full.
+    """
+    if not api_key or len(api_key) <= 4:
         return "****"
     return f"****{api_key[-4:]}"
 
@@ -136,6 +141,25 @@ def _iter_record_results(body: Any):
             yield index, item
 
 
+def count_record_outcomes(body: Any) -> tuple[int, int]:
+    """Count per-record outcomes in a session-batch/upsert response body:
+    (created_count, updated_count), per spec Section 5.4 (201=created,
+    200=updated). Unrecognized shapes or entries without a recognized
+    statusCode contribute to neither count -- this is an observability
+    helper for the run report, not a correctness gate (that's
+    _check_per_record_failures's job).
+    """
+    created = 0
+    updated = 0
+    for _index, item in _iter_record_results(body):
+        status_code = item.get("statusCode")
+        if status_code == 201:
+            created += 1
+        elif status_code == 200:
+            updated += 1
+    return created, updated
+
+
 class DrataClient:
     """Authenticated HTTP client for the Drata public API v2.
 
@@ -191,18 +215,30 @@ class DrataClient:
         attempts. Returns the final requests.Response (which may still be an
         error response after the classifier below decides what to do with it).
         Never accepts caller-supplied headers -- the auth header is fixed at
-        __init__ time."""
+        __init__ time.
+
+        Connection-level failures (DNS, refused connection, TLS handshake,
+        timeout before any response) are not in the spec's 429/5xx retry
+        table, so -- mirroring nessus_client.py's identical choice for the
+        same class of error -- they are wrapped as DrataApiError immediately,
+        not retried and not left to leak out as a bare requests exception
+        (which would misclassify a Drata connectivity failure as exit code 1
+        "unexpected error" instead of exit code 4 "Drata API error").
+        """
         url = self._url(path)
         attempt = 0
         last_response: Optional[requests.Response] = None
 
         while attempt < self._max_retries:
-            response = self._session.request(
-                method,
-                url,
-                json=json_body,
-                timeout=self._timeout,
-            )
+            try:
+                response = self._session.request(
+                    method,
+                    url,
+                    json=json_body,
+                    timeout=self._timeout,
+                )
+            except requests.RequestException as exc:
+                raise DrataApiError(f"Drata API request failed: {method} {path}: {exc}") from exc
             last_response = response
 
             if response.status_code in _RETRYABLE_STATUS_CODES or _is_server_error(response.status_code):
@@ -311,7 +347,9 @@ class DrataClient:
         """Inspect a session-batch/upsert response body for per-record failures.
         A 200-level HTTP response can still contain individually rejected
         records -- that must not be silently treated as success."""
+        saw_any = False
         for index, item in _iter_record_results(body):
+            saw_any = True
             status_code = item.get("statusCode")
             if isinstance(status_code, int) and status_code >= 400:
                 record_id = item.get("id", f"index={index}")
@@ -321,6 +359,20 @@ class DrataClient:
                     status_code=status_code,
                     response_body=item,
                 )
+        if not saw_any and body:
+            # The response body is non-empty but doesn't match any of the
+            # three recognized per-record shapes (list, {"data":[...]},
+            # {"results":[...]}) -- this assumption about Drata's real
+            # response shape is unverified against a live sandbox (see
+            # cli.py's own UNVERIFIED comments on the live push path).
+            # Surface that loudly rather than silently treating "we
+            # couldn't check" the same as "we checked and it passed".
+            logger.warning(
+                "session batch/upsert response body did not match any "
+                "recognized per-record shape -- individual record success "
+                "could not be verified. body=%r",
+                body,
+            )
 
     # -- public API -----------------------------------------------------
 
