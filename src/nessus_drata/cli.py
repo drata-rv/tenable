@@ -289,25 +289,36 @@ def _cancel_other_sessions(
     session_id, since re-running the identical scan is a legitimate
     retry/continuation, not a stale leftover.
 
-    The session-list entry's own id field name is unverified against the
-    live API (the spec doesn't name it) — checks a handful of plausible key
-    names and logs loudly, rather than silently skipping, when none match,
-    so an unrecognized response shape doesn't leave a real stale session
-    uncancelled without a trace.
+    Field-priority CONFIRMED against a live Drata sandbox (2026-09-09): a
+    session-list entry carries BOTH a short internal database id under
+    "id" (observed value: "1") AND the real application-level identifier
+    under "sessionId" (the string this client itself creates, spec 5.3's
+    "nessus-{scan_id}-{scan_ended_at}" format). Checking "id" first was a
+    live, reproduced bug — Drata's own session-actions endpoint validates
+    "Session ID must be between 3 and 64 characters" and correctly
+    rejected the short internal id with a 400. "sessionId" is now checked
+    FIRST, "id" LAST, and every candidate must be a string of 3-64 chars
+    (Drata's own stated constraint) before use — a wrong-field guess now
+    fails closed (tries the next candidate, then logs and skips) instead
+    of sending a request Drata is guaranteed to reject.
     """
     existing_sessions = client.list_sessions(config.drata.connection_id, config.drata.resource_id)
     for existing in existing_sessions:
-        other_id = (
-            existing.get("id")
-            or existing.get("sessionId")
-            or existing.get("session_id")
-            or existing.get("uuid")
+        candidates = (
+            existing.get("sessionId"),
+            existing.get("session_id"),
+            existing.get("uuid"),
+            existing.get("id"),
+        )
+        other_id = next(
+            (c for c in candidates if isinstance(c, str) and 3 <= len(c) <= 64),
+            None,
         )
         if other_id is None:
             logger.warning(
-                "stale-session cleanup: could not determine id for an "
-                "IN_PROGRESS session entry (unrecognized shape) -- skipping "
-                "it rather than guessing which field names an id. entry=%r",
+                "stale-session cleanup: could not determine a valid "
+                "(string, 3-64 char) session id for an IN_PROGRESS session "
+                "entry -- skipping it rather than guessing. entry=%r",
                 existing,
             )
             continue

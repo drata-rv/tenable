@@ -193,6 +193,74 @@ def test_live_pipeline_completes_session_end_to_end(tmp_path, monkeypatch):
 
 
 @responses.activate
+def test_stale_session_cleanup_prefers_sessionId_over_short_internal_id(tmp_path, monkeypatch):
+    """Regression test for a bug reproduced live against a real Drata
+    sandbox (2026-09-09): a session-list entry carries both a short
+    internal database id ("id": 1) and the real application-level
+    identifier ("sessionId": "nessus-..."). The collector picked "id"
+    first, tried to cancel session "1", and Drata correctly rejected it
+    with 400 "Session ID must be between 3 and 64 characters". This test
+    proves cancel_session is called with the real sessionId, never the
+    short internal id, using the exact shape observed live.
+    """
+    monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
+    monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
+    monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nessus_drata.nessus_client.time.sleep", lambda _s: None)
+
+    config_path = _write_config(tmp_path)
+    _register_nessus_mocks(responses)
+
+    stale_session_id = "nessus-999-20250101T000000Z"
+
+    # Exact shape observed live: internal db "id" (short, invalid as a
+    # Drata session id) alongside the real "sessionId".
+    responses.add(
+        responses.GET,
+        f"{DRATA_BASE}/public/v2/custom-connections/99/resources/5/sessions",
+        json=[{"id": 1, "sessionId": stale_session_id, "status": "IN_PROGRESS"}],
+        status=200,
+    )
+
+    import re
+
+    session_batch_re = re.compile(
+        rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/[^/]+$"
+    )
+    session_action_re = re.compile(
+        rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/([^/]+)/actions$"
+    )
+    responses.add(responses.POST, session_batch_re, json={"data": []}, status=200)
+
+    cancelled_ids: list = []
+    completed_ids: list = []
+
+    def action_callback(request):
+        match = session_action_re.match(request.url)
+        session_id_in_url = match.group(1)
+        body = json.loads(request.body)
+        if body.get("action") == "cancel":
+            cancelled_ids.append(session_id_in_url)
+        elif body.get("action") == "complete":
+            completed_ids.append(session_id_in_url)
+        return (200, {}, json.dumps({}))
+
+    responses.add_callback(responses.POST, session_action_re, callback=action_callback)
+
+    exit_code = cli.main(["--config", str(config_path), "--checks", str(CHECKS), "run"])
+
+    assert exit_code == 0, "expected the run to complete despite the stale session"
+    # The wrong (short, invalid) id must NEVER be sent to cancel_session.
+    assert "1" not in cancelled_ids
+    # The real sessionId is what gets cancelled.
+    assert cancelled_ids == [stale_session_id]
+    # Our own new session still completes normally afterward.
+    assert len(completed_ids) == 1
+    assert completed_ids[0].startswith("nessus-47-")
+
+
+@responses.activate
 def test_live_pipeline_cancels_session_when_safety_gate_fails(tmp_path, monkeypatch):
     monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
     monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
