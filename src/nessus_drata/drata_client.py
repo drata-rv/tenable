@@ -17,6 +17,7 @@ Hard constraints enforced in this module (spec Section 2 / 5.1 / 5.6):
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import sys
@@ -91,6 +92,25 @@ def _find_error_code(body: Any) -> Optional[int]:
         if isinstance(code, int):
             return code
     return None
+
+
+def _format_body_for_message(body: Any, max_chars: int = 500) -> str:
+    """Compact, truncated stringification of a response body for inclusion
+    directly in an exception message. response_body is already attached as
+    an exception attribute for programmatic access, but str(exc) previously
+    dropped it entirely -- forcing anyone debugging a failure to manually
+    replicate the HTTP call just to see what Drata actually said. Every
+    raise site below now includes this in the message text itself.
+    """
+    if body is None:
+        return "(empty response body)"
+    try:
+        text = json.dumps(body, separators=(",", ":"))
+    except (TypeError, ValueError):
+        text = str(body)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "...(truncated)"
+    return text
 
 
 def _extract_offending_record(body: Any) -> Optional[str]:
@@ -257,6 +277,7 @@ class DrataClient:
         raise DrataResponseError per the Section 5.4 table."""
         status = response.status_code
         body = _parse_json(response)
+        body_detail = _format_body_for_message(body)
 
         if status in (200, 201):
             return body
@@ -278,20 +299,23 @@ class DrataClient:
                 )
             if error_code == 12310:
                 raise DrataResponseError(
-                    f"Drata 401: API key not found (code 12310). key={self._redacted_key}",
+                    f"Drata 401: API key not found (code 12310). key={self._redacted_key} "
+                    f"body={body_detail}",
                     status_code=401,
                     error_code=12310,
                     response_body=body,
                 )
             if error_code == 26430:
                 raise DrataResponseError(
-                    f"Drata 401: no Authorization header sent (code 26430). key={self._redacted_key}",
+                    f"Drata 401: no Authorization header sent (code 26430). "
+                    f"key={self._redacted_key} body={body_detail}",
                     status_code=401,
                     error_code=26430,
                     response_body=body,
                 )
             raise DrataResponseError(
-                f"Drata 401: auth rejected (code {error_code}). key={self._redacted_key}",
+                f"Drata 401: auth rejected (code {error_code}). key={self._redacted_key} "
+                f"body={body_detail}",
                 status_code=401,
                 error_code=error_code,
                 response_body=body,
@@ -301,7 +325,7 @@ class DrataClient:
             offending = _extract_offending_record(body)
             detail = f" ({offending})" if offending else ""
             raise DrataResponseError(
-                f"Drata 400: schema validation failure{detail}",
+                f"Drata 400: schema validation failure{detail}. body={body_detail}",
                 status_code=400,
                 response_body=body,
             )
@@ -309,7 +333,7 @@ class DrataClient:
         if status == 403:
             raise DrataResponseError(
                 "Drata 403: key valid but not authorized for this connection "
-                "(check scopes and connection ownership).",
+                f"(check scopes and connection ownership). body={body_detail}",
                 status_code=403,
                 response_body=body,
             )
@@ -317,28 +341,28 @@ class DrataClient:
         if status == 409:
             raise DrataResponseError(
                 "Drata 409: session state conflict. Caller must cancel the "
-                "stale session and retry -- not handled in this module.",
+                f"stale session and retry -- not handled in this module. body={body_detail}",
                 status_code=409,
                 response_body=body,
             )
 
         if status == 429:
             raise DrataResponseError(
-                "Drata 429: rate limited, retries exhausted.",
+                f"Drata 429: rate limited, retries exhausted. body={body_detail}",
                 status_code=429,
                 response_body=body,
             )
 
         if _is_server_error(status):
             raise DrataResponseError(
-                f"Drata {status}: server error, retries exhausted.",
+                f"Drata {status}: server error, retries exhausted. body={body_detail}",
                 status_code=status,
                 response_body=body,
             )
 
         # Any other 4xx not explicitly listed above.
         raise DrataResponseError(
-            f"Drata {status}: unspecified client error.",
+            f"Drata {status}: unspecified client error. body={body_detail}",
             status_code=status,
             response_body=body,
         )

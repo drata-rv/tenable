@@ -530,6 +530,23 @@ def test_api_key_never_appears_in_400_exception_string():
     assert FAKE_KEY not in str(exc_info.value)
 
 
+@responses.activate
+def test_unspecified_status_code_includes_response_body_in_message():
+    responses.add(
+        responses.GET,
+        f"{BASE_URL}/public/v2/custom-connections/1/resources/2/sessions",
+        json={"message": "some Drata-side validation detail"},
+        status=422,
+    )
+    client = make_client()
+
+    with pytest.raises(DrataResponseError) as exc_info:
+        client.list_sessions(1, 2)
+
+    assert exc_info.value.status_code == 422
+    assert "some Drata-side validation detail" in str(exc_info.value)
+
+
 def test_drata_response_error_is_a_drata_api_error():
     assert issubclass(DrataResponseError, DrataApiError)
 
