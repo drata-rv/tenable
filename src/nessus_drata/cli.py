@@ -301,8 +301,29 @@ def _cancel_other_sessions(
     (Drata's own stated constraint) before use — a wrong-field guess now
     fails closed (tries the next candidate, then logs and skips) instead
     of sending a request Drata is guaranteed to reject.
+
+    FAILS SOFT, deliberately: this whole function is best-effort proactive
+    housekeeping (spec 5.3's "before starting, list sessions and cancel
+    any stale in-progress session"), not the actual evidence push. A
+    real-world Drata sandbox returned a 422 here that isn't in the spec's
+    documented response table at all (also live-reproduced, 2026-09-09) —
+    letting that abort the entire run over a cleanup step, before even
+    attempting to upload real records, is worse than logging it and
+    proceeding. If a genuine session conflict exists, the actual upload
+    attempt below will hit it directly as a 409, which the 409-retry path
+    already handles for real.
     """
-    existing_sessions = client.list_sessions(config.drata.connection_id, config.drata.resource_id)
+    try:
+        existing_sessions = client.list_sessions(config.drata.connection_id, config.drata.resource_id)
+    except DrataApiError as exc:
+        logger.warning(
+            "stale-session cleanup: listing sessions failed, proceeding "
+            "without it (a genuine conflict will surface as a 409 on "
+            "upload instead): %s",
+            exc,
+        )
+        return
+
     for existing in existing_sessions:
         candidates = (
             existing.get("sessionId"),
@@ -324,7 +345,16 @@ def _cancel_other_sessions(
             continue
         if other_id != session_id:
             logger.warning("cancelling stale in-progress session %s", other_id)
-            client.cancel_session(config.drata.connection_id, config.drata.resource_id, other_id)
+            try:
+                client.cancel_session(config.drata.connection_id, config.drata.resource_id, other_id)
+            except DrataApiError as exc:
+                logger.warning(
+                    "stale-session cleanup: cancelling session %s failed, "
+                    "continuing (a genuine conflict will surface as a 409 "
+                    "on upload instead): %s",
+                    other_id,
+                    exc,
+                )
 
 
 def _upload_batch_with_409_retry(

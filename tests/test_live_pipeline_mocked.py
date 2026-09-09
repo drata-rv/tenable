@@ -193,6 +193,58 @@ def test_live_pipeline_completes_session_end_to_end(tmp_path, monkeypatch):
 
 
 @responses.activate
+def test_stale_session_cleanup_failure_does_not_abort_the_run(tmp_path, monkeypatch):
+    """Regression test for a live-reproduced bug (2026-09-09): a real Drata
+    sandbox returned 422 (undocumented by spec) on the plain GET .../sessions
+    listing call, which aborted the entire run before any real upload was
+    even attempted. Stale-session cleanup is best-effort housekeeping, not
+    the actual push -- its failure must be logged and the run must proceed
+    to upload and complete normally. A genuine session conflict still
+    surfaces for real via the 409 path during the actual upload.
+    """
+    monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
+    monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
+    monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nessus_drata.nessus_client.time.sleep", lambda _s: None)
+
+    config_path = _write_config(tmp_path)
+    _register_nessus_mocks(responses)
+
+    # The listing call itself fails with an undocumented status -- this is
+    # the exact shape observed live.
+    responses.add(
+        responses.GET,
+        f"{DRATA_BASE}/public/v2/custom-connections/99/resources/5/sessions",
+        json={"message": "unspecified"},
+        status=422,
+    )
+
+    import re
+
+    session_batch_re = re.compile(
+        rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/[^/]+$"
+    )
+    session_action_re = re.compile(
+        rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/[^/]+/actions$"
+    )
+    responses.add(responses.POST, session_batch_re, json={"data": []}, status=200)
+    session_actions: list = []
+
+    def action_callback(request):
+        body = json.loads(request.body)
+        session_actions.append(body.get("action"))
+        return (200, {}, json.dumps({}))
+
+    responses.add_callback(responses.POST, session_action_re, callback=action_callback)
+
+    exit_code = cli.main(["--config", str(config_path), "--checks", str(CHECKS), "run"])
+
+    assert exit_code == 0, "a failed cleanup listing must not abort the run"
+    assert session_actions == ["complete"]
+
+
+@responses.activate
 def test_stale_session_cleanup_prefers_sessionId_over_short_internal_id(tmp_path, monkeypatch):
     """Regression test for a bug reproduced live against a real Drata
     sandbox (2026-09-09): a session-list entry carries both a short
