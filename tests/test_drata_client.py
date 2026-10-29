@@ -221,6 +221,51 @@ def test_upload_session_batch_raises_on_per_record_failure_despite_200():
 
 
 @responses.activate
+def test_upload_session_batch_raises_on_per_record_error_object_with_201():
+    """Live shape (2026-10-29): HTTP 200, per-record statusCode 201, but an
+    "error" object and the rejected record echoed under "data" -- the record
+    was NOT staged. Must raise, naming the record and the schema error."""
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/public/v2/custom-connections/1/resources/2/sessions/sess-1",
+        json=[
+            {
+                "statusCode": 201,
+                "error": {
+                    "message": "Schema validation failed for data: [{\"\":\"must have "
+                    "required property 'cis_4_5_firewall_public_state'\"}]",
+                    "code": 28022,
+                },
+                "data": {"id": "nessus-wks-0001", "hostname": "WKS-0001"},
+            }
+        ],
+        status=200,
+    )
+    client = make_client()
+
+    with pytest.raises(DrataResponseError) as exc_info:
+        client.upload_session_batch(1, 2, "sess-1", [{"id": "nessus-wks-0001"}])
+
+    message = str(exc_info.value)
+    assert "nessus-wks-0001" in message
+    assert "cis_4_5_firewall_public_state" in message
+    assert exc_info.value.error_code == 28022
+    assert exc_info.value.status_code == 400
+
+
+@responses.activate
+def test_upload_session_batch_null_error_is_not_a_failure():
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/public/v2/custom-connections/1/resources/2/sessions/sess-1",
+        json=[{"statusCode": 201, "error": None, "data": {"id": "host-1"}}],
+        status=200,
+    )
+    client = make_client()
+    client.upload_session_batch(1, 2, "sess-1", [{"id": "host-1"}])
+
+
+@responses.activate
 def test_upsert_records_raises_on_per_record_failure_despite_200():
     responses.add(
         responses.POST,

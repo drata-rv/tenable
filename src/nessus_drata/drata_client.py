@@ -161,6 +161,17 @@ def _iter_record_results(body: Any):
             yield index, item
 
 
+def _record_id_of(item: dict, index: int) -> Any:
+    """Record id for a per-record result: top-level "id", else the echoed
+    record under "data" (the shape Drata returns on a rejected record)."""
+    if item.get("id") is not None:
+        return item["id"]
+    data = item.get("data")
+    if isinstance(data, dict) and data.get("id") is not None:
+        return data["id"]
+    return f"index={index}"
+
+
 def count_record_outcomes(body: Any) -> tuple[int, int]:
     """Count per-record outcomes in a session-batch/upsert response body:
     (created_count, updated_count), per spec Section 5.4 (201=created,
@@ -375,12 +386,20 @@ class DrataClient:
         for index, item in _iter_record_results(body):
             saw_any = True
             status_code = item.get("statusCode")
-            if isinstance(status_code, int) and status_code >= 400:
-                record_id = item.get("id", f"index={index}")
+            error = item.get("error")
+            has_bad_status = isinstance(status_code, int) and status_code >= 400
+            # Observed live (2026-10-29): Drata answers a schema-invalid
+            # record with statusCode 201 AND an "error" object, and the
+            # record is NOT staged. statusCode alone says "created".
+            if has_bad_status or error:
+                record_id = _record_id_of(item, index)
+                error_code = error.get("code") if isinstance(error, dict) else None
+                detail = f" error={_format_body_for_message(error)}" if error else ""
                 raise DrataResponseError(
                     f"Drata session batch: record {record_id!r} rejected with "
-                    f"statusCode {status_code}.",
-                    status_code=status_code,
+                    f"statusCode {status_code}.{detail}",
+                    status_code=status_code if has_bad_status else 400,
+                    error_code=error_code if isinstance(error_code, int) else None,
                     response_body=item,
                 )
         if not saw_any and body:

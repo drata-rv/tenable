@@ -313,6 +313,127 @@ def test_stale_session_cleanup_prefers_sessionId_over_short_internal_id(tmp_path
 
 
 @responses.activate
+def test_stale_session_cleanup_only_cancels_in_progress_sessions(tmp_path, monkeypatch):
+    """Live shape (2026-10-29): the server ignores ?status=IN_PROGRESS and
+    returns every session, spelling the terminal state "CANCELED". Only the
+    IN_PROGRESS one may be cancelled; the CANCELED and ACTIVE ones must not
+    be sent a cancel at all."""
+    monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
+    monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
+    monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nessus_drata.nessus_client.time.sleep", lambda _s: None)
+
+    config_path = _write_config(tmp_path)
+    _register_nessus_mocks(responses)
+
+    responses.add(
+        responses.GET,
+        f"{DRATA_BASE}/public/v2/custom-connections/99/resources/5/sessions",
+        json={
+            "data": [
+                {"id": 3, "sessionId": "nessus-999-20250103T000000Z", "status": "ACTIVE"},
+                {"id": 2, "sessionId": "nessus-999-20250102T000000Z", "status": "IN_PROGRESS"},
+                {"id": 1, "sessionId": "nessus-999-20250101T000000Z", "status": "CANCELED"},
+            ],
+            "pagination": {"cursor": None},
+        },
+        status=200,
+    )
+
+    import re
+
+    session_batch_re = re.compile(
+        rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/[^/]+$"
+    )
+    session_action_re = re.compile(
+        rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/([^/]+)/actions$"
+    )
+    responses.add(responses.POST, session_batch_re, json={"data": []}, status=200)
+
+    cancelled_ids: list = []
+
+    def action_callback(request):
+        match = session_action_re.match(request.url)
+        if json.loads(request.body).get("action") == "cancel":
+            cancelled_ids.append(match.group(1))
+        return (200, {}, json.dumps({}))
+
+    responses.add_callback(responses.POST, session_action_re, callback=action_callback)
+
+    exit_code = cli.main(["--config", str(config_path), "--checks", str(CHECKS), "run"])
+
+    assert exit_code == 0
+    assert cancelled_ids == ["nessus-999-20250102T000000Z"]
+
+
+@responses.activate
+def test_live_pipeline_aborts_and_cancels_when_record_rejected_with_201(tmp_path, monkeypatch):
+    """Live bug (2026-10-29): Drata answered the batch POST with HTTP 200,
+    statusCode 201 and an "error" (schema validation) per record, nothing was
+    staged, and the run went on to complete an empty session. A rejected
+    record must fail the batch: no complete, session cancelled, exit 5."""
+    monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
+    monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
+    monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nessus_drata.nessus_client.time.sleep", lambda _s: None)
+
+    config_path = _write_config(tmp_path)
+    _register_nessus_mocks(responses)
+
+    responses.add(
+        responses.GET,
+        f"{DRATA_BASE}/public/v2/custom-connections/99/resources/5/sessions",
+        json=[],
+        status=200,
+    )
+
+    import re
+
+    session_batch_re = re.compile(
+        rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/[^/]+$"
+    )
+    session_action_re = re.compile(
+        rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/[^/]+/actions$"
+    )
+
+    def batch_callback(request):
+        sent = json.loads(request.body)["data"]
+        results = [
+            {
+                "statusCode": 201,
+                "error": {
+                    "message": "Schema validation failed for data: [{\"\":\"must have "
+                    "required property 'some_check_field'\"}]",
+                    "code": 28022,
+                },
+                "data": {"id": r["id"]},
+            }
+            for r in sent
+        ]
+        return (200, {}, json.dumps(results))
+
+    responses.add_callback(responses.POST, session_batch_re, callback=batch_callback)
+
+    session_actions: list = []
+
+    def action_callback(request):
+        session_actions.append(json.loads(request.body).get("action"))
+        return (200, {}, json.dumps({}))
+
+    responses.add_callback(responses.POST, session_action_re, callback=action_callback)
+
+    exit_code = cli.main(["--config", str(config_path), "--checks", str(CHECKS), "run"])
+
+    assert exit_code == 5
+    assert session_actions == ["cancel"]
+    report = json.loads(next((tmp_path / "artifacts" / "reports").glob("*.json")).read_text())
+    gate_by_name = {g["name"]: g for g in report["safety_gates"]}
+    assert gate_by_name["batch_uploads"]["passed"] is False
+
+
+@responses.activate
 def test_live_pipeline_cancels_session_when_safety_gate_fails(tmp_path, monkeypatch):
     monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
     monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")

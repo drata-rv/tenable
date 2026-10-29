@@ -326,6 +326,18 @@ def _cancel_other_sessions(
         return
 
     for existing in existing_sessions:
+        # The server ignores ?status=IN_PROGRESS (observed live 2026-10-29: a
+        # CANCELED session came back from that query) so filter here. Drata
+        # rejects cancel of anything not IN_PROGRESS with 422, and the list
+        # also holds the ACTIVE dataset, which must never be a cancel target.
+        entry_status = existing.get("status")
+        if isinstance(entry_status, str) and entry_status.upper() != "IN_PROGRESS":
+            logger.debug(
+                "stale-session cleanup: skipping %s (status %s)",
+                existing.get("sessionId"),
+                entry_status,
+            )
+            continue
         candidates = (
             existing.get("sessionId"),
             existing.get("session_id"),
