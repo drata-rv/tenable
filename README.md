@@ -29,8 +29,18 @@ python -m nessus_drata.cli run --fixtures tests/fixtures/sample_small.nessus --d
 
 ## Live usage
 
-Requires `NESSUS_ACCESS_KEY`, `NESSUS_SECRET_KEY`, `DRATA_API_KEY` in the
-environment. See Section 11 (Runbook) of the spec for one-time setup and
+Requires `NESSUS_ACCESS_KEY`, `NESSUS_SECRET_KEY`, `DRATA_API_KEY`. Put them
+in a gitignored `.env`:
+
+```bash
+cp config/.env.example config/.env   # then paste the three values after the "="
+```
+
+`.env` is read from next to `--config` (the `config/` folder), then from the
+working directory; `--env-file PATH` (before the subcommand) overrides both.
+Real environment variables, such as the machine-scope ones set by
+`windows/set_machine_env.ps1`, take precedence over the file. Only those three
+names are read. See Section 11 (Runbook) of the spec for one-time setup and
 Section 9 for the Windows Scheduled Task deployment.
 
 ```bash

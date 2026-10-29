@@ -1,7 +1,8 @@
-"""Load and validate config.yaml and checks.yaml. No I/O beyond the two file reads."""
+"""Load and validate config.yaml and checks.yaml, and optionally a .env of secrets."""
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -269,10 +270,91 @@ def load_manifest_audit_file(path: Path) -> Optional[str]:
     return audit_file if isinstance(audit_file, str) else None
 
 
+_ENV_LINE_RE = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
+
+
+def _parse_env_value(raw: str) -> str:
+    raw = raw.strip()
+    if raw[:1] in ("'", '"'):
+        end = raw.find(raw[0], 1)
+        if end != -1:
+            # Closing quote found: anything after it (e.g. a trailing comment) is dropped.
+            return raw[1:end]
+    comment = re.search(r"\s#", raw)
+    return (raw[: comment.start()] if comment else raw).strip()
+
+
+def parse_env_text(text: str) -> tuple[dict[str, str], list[int]]:
+    """Parse KEY=VALUE lines. Returns (values, line numbers that were not
+    KEY=VALUE). Never returns or logs line content -- a malformed line may
+    still be a secret. No escape processing; the last duplicate key wins.
+    """
+    values: dict[str, str] = {}
+    bad_lines: list[int] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = _ENV_LINE_RE.match(stripped)
+        if match is None:
+            bad_lines.append(lineno)
+            continue
+        values[match.group(1)] = _parse_env_value(match.group(2))
+    return values, bad_lines
+
+
+def load_env_file(path: Path, *, required: bool = False) -> list[str]:
+    """Load the secrets in a .env file into os.environ. Returns the names set.
+
+    Deliberate limits, all so a .env can never change behaviour beyond
+    supplying the three secrets:
+    - only REQUIRED_ENV_VARS are honoured; any other key is skipped with a
+      warning naming the key (never the value) -- a stray PATH or
+      PYTHONPATH in a .env must not alter the interpreter's behaviour.
+    - a variable that is already set and non-empty in the real environment
+      wins, so machine-scope variables on the Windows box (spec Section 9.5)
+      still take precedence over a file left lying around.
+    - blank values are ignored, so the shipped .env.example is inert.
+    A missing file is fine unless required=True (an explicit --env-file).
+    """
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        if required:
+            raise ConfigError(f"env file not found: {path}")
+        return []
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"cannot read env file {path}: {exc.__class__.__name__}")
+
+    values, bad_lines = parse_env_text(text)
+    log = logging.getLogger("nessus_drata.config")
+    if bad_lines:
+        log.warning(
+            "%s: line(s) %s are not KEY=VALUE and were skipped",
+            path,
+            ", ".join(str(n) for n in bad_lines),
+        )
+    unknown = sorted(k for k in values if k not in REQUIRED_ENV_VARS)
+    if unknown:
+        log.warning("%s: ignoring unrecognized key(s): %s", path, ", ".join(unknown))
+
+    loaded: list[str] = []
+    for name in REQUIRED_ENV_VARS:
+        value = values.get(name, "")
+        if value and not os.environ.get(name):
+            os.environ[name] = value
+            loaded.append(name)
+    return loaded
+
+
 def load_secrets() -> Secrets:
     missing = [name for name in REQUIRED_ENV_VARS if not os.environ.get(name)]
     if missing:
-        raise ConfigError(f"missing required environment variable(s): {', '.join(missing)}")
+        raise ConfigError(
+            f"missing required environment variable(s): {', '.join(missing)} "
+            "(set in the environment or in a .env file, see config/.env.example)"
+        )
     return Secrets(
         nessus_access_key=os.environ["NESSUS_ACCESS_KEY"],
         nessus_secret_key=os.environ["NESSUS_SECRET_KEY"],
@@ -291,7 +373,10 @@ def get_required_env(name: str) -> str:
     """
     value = os.environ.get(name)
     if not value:
-        raise ConfigError(f"missing required environment variable: {name}")
+        raise ConfigError(
+            f"missing required environment variable: {name} "
+            "(set it in the environment or in a .env file, see config/.env.example)"
+        )
     return value
 
 

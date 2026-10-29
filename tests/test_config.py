@@ -120,11 +120,17 @@ def test_validate_config_missing_env_var_exits_two(tmp_path):
     env = os.environ.copy()
     env.update(DUMMY_ENV)
     del env["DRATA_API_KEY"]
+    # Explicit empty env file: keeps this test hermetic if a real .env exists.
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    env.pop("DRATA_API_KEY", None)
     result = subprocess.run(
         [
             sys.executable,
             "-m",
             "nessus_drata.cli",
+            "--env-file",
+            str(empty_env),
             "--config",
             "config/config.example.yaml",
             "--checks",

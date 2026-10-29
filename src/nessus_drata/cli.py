@@ -17,6 +17,7 @@ from .config import (
     get_required_env,
     load_checks_manifest,
     load_config,
+    load_env_file,
     load_manifest_audit_file,
     redact,
 )
@@ -658,6 +659,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="config/config.yaml")
     parser.add_argument("--checks", default="config/checks.yaml")
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--env-file",
+        default=None,
+        help=(
+            "File with NESSUS_ACCESS_KEY / NESSUS_SECRET_KEY / DRATA_API_KEY. "
+            "Default: .env next to --config, then .env in the working directory. "
+            "Real environment variables always take precedence."
+        ),
+    )
     # --force and --allow-degraded-session deliberately do NOT live on the
     # top-level parser (only run_parser defines them, below). argparse's
     # subparser mechanism parses each subcommand's own arguments into a
@@ -718,6 +728,25 @@ _HANDLERS = {
 }
 
 
+def _load_env_files(args: argparse.Namespace) -> None:
+    """Populate os.environ from a .env before any command reads a secret.
+    An explicit --env-file is exclusive and must exist. Otherwise try .env
+    next to --config (the config/ folder), then .env in the working
+    directory; earlier files win because load_env_file never overrides a
+    variable that is already set.
+    """
+    if args.env_file:
+        load_env_file(Path(args.env_file), required=True)
+        return
+    seen: set[Path] = set()
+    for candidate in (Path(args.config).parent / ".env", Path(".env")):
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        load_env_file(candidate)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -728,6 +757,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return EXIT_UNEXPECTED  # pragma: no cover — parser.error exits before this
 
     try:
+        _load_env_files(args)
         return handler(args)
     except ConfigError as exc:
         print(f"[CONFIG ERROR] {exc}", file=sys.stderr)
