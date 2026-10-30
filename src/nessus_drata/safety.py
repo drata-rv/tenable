@@ -95,7 +95,9 @@ def _gate_parse_mode(parse_mode: str, allow_degraded_session: bool) -> GateResul
 def _gate_batch_uploads(batch_upload_results: Optional[Sequence[bool]]) -> GateResult:
     if batch_upload_results is None:
         return GateResult(
-            "batch_uploads", True, "not evaluated: no live upload attempted (dry-run)"
+            "batch_uploads",
+            True,
+            "not evaluated: no upload attempted (dry-run, or an earlier gate failed first)",
         )
     failed_count = sum(1 for ok in batch_upload_results if not ok)
     passed = failed_count == 0
