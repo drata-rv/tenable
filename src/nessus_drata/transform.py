@@ -19,6 +19,7 @@ description of the same gate.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -26,6 +27,27 @@ from nessus_drata.config import CheckEntry
 from nessus_drata.models import HostKeyCandidates, HostResult
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+# Typographic look-alikes that creep into audit descriptions when they are
+# edited in Word/Notepad/web forms. Mapped to their ASCII form so a cosmetic
+# edit to an audit file cannot turn a matching check into NOT_FOUND.
+_TYPOGRAPHY_MAP = str.maketrans(
+    {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201a": "'",
+        "\u201b": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u201e": '"',
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2212": "-",
+    }
+)
 
 
 class TransformError(Exception):
@@ -44,6 +66,9 @@ class CoverageSummary:
     identity_fallbacks: int
     duplicate_ids: tuple[str, ...]
     coverage_pct: float
+    # Manifest fields that came back NOT_FOUND on at least one host, in
+    # manifest order. Lets the report and logs name WHICH checks went missing.
+    missing_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -76,13 +101,25 @@ def _resolve_host_key(candidates: HostKeyCandidates) -> tuple[str, bool]:
     )
 
 
-def _match_check(check: CheckEntry, items) -> list:
+def normalize_check_name(name: str) -> str:
+    """Comparison form of a check name: Unicode-compatibility normalized,
+    typographic quotes/dashes folded to ASCII, whitespace runs collapsed and
+    trimmed. Case is preserved. Applied to BOTH the manifest value and the
+    Nessus check name, so matching is still exact/prefix/contains (spec 4.2),
+    just immune to invisible formatting drift.
+    """
+    folded = unicodedata.normalize("NFKC", name).translate(_TYPOGRAPHY_MAP)
+    return " ".join(folded.split())
+
+
+def match_check(check: CheckEntry, items) -> list:
+    wanted = normalize_check_name(check.match_value)
     if check.match_type == "check_name_exact":
-        return [i for i in items if i.check_name == check.match_value]
+        return [i for i in items if normalize_check_name(i.check_name) == wanted]
     if check.match_type == "check_name_prefix":
-        return [i for i in items if i.check_name.startswith(check.match_value)]
+        return [i for i in items if normalize_check_name(i.check_name).startswith(wanted)]
     if check.match_type == "check_name_contains":
-        return [i for i in items if check.match_value in i.check_name]
+        return [i for i in items if wanted in normalize_check_name(i.check_name)]
     raise TransformError(f"unknown match_type {check.match_type!r}")  # pragma: no cover
 
 
@@ -104,6 +141,7 @@ def transform_host_results(
     manifest_misses = 0
     manifest_ambiguous = 0
     identity_fallbacks = 0
+    missing_fields: set[str] = set()
 
     for host in host_results:
         host_key, used_ip_fallback = _resolve_host_key(host.host_key_candidates)
@@ -155,10 +193,11 @@ def transform_host_results(
         all_required_passed = True
 
         for check in checks:
-            matches = _match_check(check, host.compliance_items)
+            matches = match_check(check, host.compliance_items)
             if len(matches) == 0:
                 value = "NOT_FOUND"
                 manifest_misses += 1
+                missing_fields.add(check.field)
             elif len(matches) == 1:
                 value = matches[0].result
             else:
@@ -209,5 +248,6 @@ def transform_host_results(
         identity_fallbacks=identity_fallbacks,
         duplicate_ids=duplicate_ids,
         coverage_pct=coverage_pct,
+        missing_fields=tuple(c.field for c in checks if c.field in missing_fields),
     )
     return TransformResult(records=tuple(records), summary=summary)

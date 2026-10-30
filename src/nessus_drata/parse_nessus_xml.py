@@ -16,12 +16,33 @@ no transform logic lives here — that is transform.py's job in a later phase.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Iterator, Optional, Union
 
 from lxml import etree
 
 from nessus_drata.models import ComplianceItem, HostKeyCandidates, HostResult
+
+logger = logging.getLogger("nessus_drata.parse")
+
+_ROOT_TAG = "NessusClientData_v2"
+
+# libxml2 error types seen on EVERY healthy export, because `cm:` is used
+# without an xmlns declaration (spec 3.7). Pure noise; never reported.
+_NAMESPACE_NOISE = frozenset({"NS_ERR_UNDEFINED_NAMESPACE"})
+
+# Unclosed element at end of input: the download was cut short. recover=True
+# would otherwise hand back whatever parsed before the cut as if it were the
+# whole export, silently dropping every check after it.
+_TRUNCATION_TYPES = frozenset({"ERR_TAG_NOT_FINISHED"})
+
+
+class ExportParseError(Exception):
+    """The file is not a complete .nessus export (empty, not XML, or cut
+    short). Raised instead of returning partial data: an incomplete export
+    is inconclusive evidence and must never be recorded as a result.
+    """
 
 
 def local_name(tag: str) -> str:
@@ -134,6 +155,42 @@ def _clear_element(elem) -> None:
             del parent[0]
 
 
+def _size_of(path: Union[str, Path]) -> int:
+    try:
+        return Path(path).stat().st_size
+    except OSError:
+        return -1
+
+
+def _check_parser_health(context, path: Union[str, Path], saw_root: bool) -> None:
+    """After the stream is consumed, decide whether recover=True papered over
+    a file we must not trust. Raises on a non-.nessus or truncated file;
+    warns on other recoverable damage.
+    """
+    if not saw_root:
+        raise ExportParseError(
+            f"{path}: no <{_ROOT_TAG}> document found (file is {_size_of(path)} bytes). "
+            f"Not a .nessus export; an error page or empty download is the usual cause."
+        )
+    real_errors = [e for e in context.error_log if e.type_name not in _NAMESPACE_NOISE]
+    if any(e.type_name in _TRUNCATION_TYPES for e in real_errors):
+        raise ExportParseError(
+            f"{path}: export is truncated (an element was never closed; file is "
+            f"{_size_of(path)} bytes). Re-run to fetch a fresh export."
+        )
+    if real_errors:
+        first = real_errors[0]
+        logger.warning(
+            "%s: %d XML error(s) recovered while parsing (first: %s at line %s: %s). "
+            "Content near the damage may be missing; check manifest coverage.",
+            path,
+            len(real_errors),
+            first.type_name,
+            first.line,
+            first.message.strip(),
+        )
+
+
 def parse_nessus_xml(path: Union[str, Path]) -> Iterator[HostResult]:
     """Parse a .nessus XML export into one HostResult per ReportHost.
 
@@ -142,6 +199,12 @@ def parse_nessus_xml(path: Union[str, Path]) -> Iterator[HostResult]:
     and no compliance-check-name child) are skipped silently and never
     counted. A ReportHost with zero compliance items still yields a
     HostResult with an empty compliance_items tuple.
+
+    Raises ExportParseError once the stream ends if the file is empty, not a
+    .nessus document, or truncated, so callers that materialise the result
+    (list(...)) never see partial data. Other recoverable XML damage (stray
+    control characters, unescaped `&`) is logged as a warning and parsing
+    continues.
     """
     context = etree.iterparse(
         str(path),
@@ -150,33 +213,45 @@ def parse_nessus_xml(path: Union[str, Path]) -> Iterator[HostResult]:
         huge_tree=True,
     )
 
-    for _event, elem in context:
-        if not isinstance(elem.tag, str):
-            # Comment / processing-instruction node; never a ReportHost.
-            continue
-        if local_name(elem.tag) != "ReportHost":
-            continue
-
-        host_properties = _build_host_properties(elem)
-        host_key_candidates = HostKeyCandidates(
-            netbios_name=host_properties.get("netbios-name"),
-            host_fqdn=host_properties.get("host-fqdn"),
-            host_ip=host_properties.get("host-ip"),
-        )
-
-        items: list[ComplianceItem] = []
-        for report_item in _find_children(elem, "ReportItem"):
-            if not _is_compliance_item(report_item):
+    saw_root = False
+    try:
+        for _event, elem in context:
+            if not isinstance(elem.tag, str):
+                # Comment / processing-instruction node; never a ReportHost.
                 continue
-            compliance_item = _build_compliance_item(report_item)
-            if compliance_item is not None:
-                items.append(compliance_item)
+            tag = local_name(elem.tag)
+            if tag == _ROOT_TAG:
+                saw_root = True
+                continue
+            if tag != "ReportHost":
+                continue
 
-        yield HostResult(
-            host_key_candidates=host_key_candidates,
-            host_properties=host_properties,
-            compliance_items=tuple(items),
-            source_fidelity="full",
-        )
+            host_properties = _build_host_properties(elem)
+            host_key_candidates = HostKeyCandidates(
+                netbios_name=host_properties.get("netbios-name"),
+                host_fqdn=host_properties.get("host-fqdn"),
+                host_ip=host_properties.get("host-ip"),
+            )
 
-        _clear_element(elem)
+            items: list[ComplianceItem] = []
+            for report_item in _find_children(elem, "ReportItem"):
+                if not _is_compliance_item(report_item):
+                    continue
+                compliance_item = _build_compliance_item(report_item)
+                if compliance_item is not None:
+                    items.append(compliance_item)
+
+            yield HostResult(
+                host_key_candidates=host_key_candidates,
+                host_properties=host_properties,
+                compliance_items=tuple(items),
+                source_fidelity="full",
+            )
+
+            _clear_element(elem)
+    except etree.XMLSyntaxError as exc:
+        raise ExportParseError(
+            f"{path}: not parseable as XML ({exc}); file is {_size_of(path)} bytes"
+        ) from exc
+
+    _check_parser_health(context, path, saw_root)

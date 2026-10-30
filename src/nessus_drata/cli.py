@@ -21,11 +21,12 @@ from .config import (
     load_manifest_audit_file,
     redact,
 )
+from .diagnostics import analyze_manifest, log_diagnosis
 from .drata_client import DrataApiError, DrataClient, DrataResponseError, count_record_outcomes
 from .logging_setup import setup_logging
 from .nessus_client import NessusApiError, NessusClient
 from .parse_nessus_csv import parse_nessus_csv
-from .parse_nessus_xml import parse_nessus_xml
+from .parse_nessus_xml import ExportParseError, parse_nessus_xml
 from .report import RunReport, print_console_summary, write_report
 from .safety import all_gates_passed, apply_force_bypass, bypassed_gate_names, evaluate_gates
 from .schema_gen import generate_schema
@@ -545,6 +546,7 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
     )
     records = transform_result.records
     summary = transform_result.summary
+    log_diagnosis(logger, analyze_manifest(config.checks, hosts))
 
     prior_state = load_last_run_state(Path(config.runtime.state_dir))
 
@@ -622,6 +624,7 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
         manifest_ambiguous=summary.manifest_ambiguous,
         identity_fallbacks=summary.identity_fallbacks,
         duplicate_ids=summary.duplicate_ids,
+        manifest_missing_fields=summary.missing_fields,
         batches_sent=batches_sent,
         records_created=records_created,
         records_updated=records_updated,
@@ -779,6 +782,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         return EXIT_CONFIG_ERROR
     except NessusApiError as exc:
         print(f"[NESSUS ERROR] {exc}", file=sys.stderr)
+        return EXIT_NESSUS_ERROR
+    except ExportParseError as exc:
+        # Incomplete/garbled export: a Nessus-side retryable problem, not a
+        # config or manifest fault, so it shares exit 3 with other export failures.
+        print(f"[NESSUS EXPORT ERROR] {exc}", file=sys.stderr)
         return EXIT_NESSUS_ERROR
     except DrataApiError as exc:
         print(f"[DRATA ERROR] {exc}", file=sys.stderr)

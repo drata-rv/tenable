@@ -34,6 +34,8 @@ class RunReport:
     session_action: Optional[str]
     safety_gates: tuple  # tuple of {"name":..., "passed":..., "reason":...} dicts
     exit_code: int
+    # Manifest fields with no match on at least one host (names, not values).
+    manifest_missing_fields: tuple = ()
 
 
 def write_report(reports_dir: Path, report: RunReport) -> Path:
@@ -51,6 +53,8 @@ def print_console_summary(report: RunReport) -> None:
         f"  manifest_coverage_pct={report.manifest_coverage_pct:.1f}% "
         f"manifest_misses={report.manifest_misses} manifest_ambiguous={report.manifest_ambiguous}"
     )
+    if report.manifest_missing_fields:
+        print(f"  manifest_missing_fields={', '.join(report.manifest_missing_fields)}")
     print(
         f"  identity_fallbacks={report.identity_fallbacks} "
         f"duplicate_ids={len(report.duplicate_ids)}"
