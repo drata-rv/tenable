@@ -13,7 +13,7 @@ from __future__ import annotations
 import difflib
 import logging
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Optional, Sequence
 
 from nessus_drata.config import CheckEntry
 from nessus_drata.models import HostResult
@@ -83,6 +83,25 @@ def analyze_manifest(
         gaps=tuple(gaps),
         unmapped_names=tuple(n for k, n in first_seen.items() if k not in matched_norm),
     )
+
+
+def no_results_reason(diagnosis: ManifestDiagnosis, coverage_pct: float) -> Optional[str]:
+    """Why the scan gave nothing to record, or None when at least one manifest
+    check matched. Zero hosts is checked here because coverage_pct reads 100%
+    when there are no hosts to attempt."""
+    if diagnosis.host_count == 0:
+        return "the scan result has no hosts"
+    if diagnosis.item_count == 0:
+        return (
+            f"the scan result has {diagnosis.host_count} host(s) but no compliance "
+            "results (audit did not run or its login failed)"
+        )
+    if coverage_pct <= 0:
+        return (
+            f"the scan has {diagnosis.item_count} compliance result(s) but none match "
+            "any checks.yaml entry"
+        )
+    return None
 
 
 def _listed(names: Sequence[str]) -> str:

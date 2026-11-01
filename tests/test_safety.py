@@ -20,6 +20,9 @@ _DEFAULTS = dict(
 )
 
 
+_NO_RESULTS = "the scan result has no hosts"
+
+
 def _gates(**overrides):
     kwargs = dict(
         record_count=100,
@@ -72,7 +75,7 @@ def test_shrink_ratio_gate_passes_with_no_prior_state():
 
 
 def test_acceptance_12_force_bypasses_only_gates_1_and_2():
-    gates = _gates(record_count=60, previous_record_count=100, coverage_pct=50.0)
+    gates = _gates(record_count=60, previous_record_count=100, no_results_reason=_NO_RESULTS)
     assert not all_gates_passed(gates)
 
     forced = apply_force_bypass(gates, force=True)
@@ -83,7 +86,7 @@ def test_acceptance_12_force_bypasses_only_gates_1_and_2():
     assert by_name["max_shrink_ratio"].passed is True
     assert "BYPASSED by --force" in by_name["max_shrink_ratio"].reason
 
-    # Gate 3 (manifest_coverage) fails and is NEVER bypassed by --force.
+    # Gate 3 (manifest_coverage) fails on NO RESULTS and is NEVER bypassed by --force.
     assert by_name["manifest_coverage"].passed is False
     assert not all_gates_passed(forced)
 
@@ -100,7 +103,8 @@ def test_force_never_bypasses_gates_3_through_6():
     gates = _gates(
         record_count=10,  # gate 1 fails
         previous_record_count=100,  # gate 2 fails (10 < 80)
-        coverage_pct=10.0,  # gate 3 fails
+        coverage_pct=0.0,
+        no_results_reason=_NO_RESULTS,  # gate 3 fails
         duplicate_ids=("nessus-dup",),  # gate 4 fails
         parse_mode="csv_degraded",  # gate 5 fails
         batch_upload_results=[True, False],  # gate 6 fails
@@ -138,14 +142,28 @@ def test_csv_degraded_parse_mode_allowed_with_flag():
     assert all_gates_passed(gates)
 
 
-def test_manifest_coverage_gate_boundary():
-    gates = _gates(coverage_pct=90.0)
-    coverage_gate = next(g for g in gates if g.name == "manifest_coverage")
-    assert coverage_gate.passed is True  # >= threshold, not strictly greater
+def test_manifest_coverage_gate_passes_at_or_above_threshold():
+    coverage_gate = next(g for g in _gates(coverage_pct=90.0) if g.name == "manifest_coverage")
+    assert coverage_gate.passed is True
+    assert "NOT_FOUND" not in coverage_gate.reason
 
-    gates_below = _gates(coverage_pct=89.9)
-    coverage_gate_below = next(g for g in gates_below if g.name == "manifest_coverage")
-    assert coverage_gate_below.passed is False
+
+def test_manifest_coverage_gate_pushes_partial_coverage_and_says_so():
+    # Policy change (operator-approved, deviates from spec 5.5 gate 3): a check
+    # that went missing no longer blocks the run; it is pushed as NOT_FOUND.
+    gates = _gates(coverage_pct=40.0)
+    coverage_gate = next(g for g in gates if g.name == "manifest_coverage")
+    assert coverage_gate.passed is True
+    assert "NOT_FOUND" in coverage_gate.reason
+    assert all_gates_passed(gates)
+
+
+def test_manifest_coverage_gate_fails_with_no_results_reason():
+    gates = _gates(coverage_pct=100.0, no_results_reason=_NO_RESULTS)
+    coverage_gate = next(g for g in gates if g.name == "manifest_coverage")
+    assert coverage_gate.passed is False
+    assert coverage_gate.reason == f"NO RESULTS: {_NO_RESULTS}"
+    assert not all_gates_passed(gates)
 
 
 def test_batch_uploads_gate_none_means_not_evaluated():

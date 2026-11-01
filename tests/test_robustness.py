@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from nessus_drata.config import CheckEntry
-from nessus_drata.diagnostics import analyze_manifest, log_diagnosis
+from nessus_drata.diagnostics import analyze_manifest, log_diagnosis, no_results_reason
 from nessus_drata.models import ComplianceItem, HostKeyCandidates, HostResult
 from nessus_drata.parse_nessus_xml import ExportParseError, parse_nessus_xml
 from nessus_drata.transform import normalize_check_name, transform_host_results
@@ -254,3 +254,35 @@ def test_cli_manifest_mismatch_reports_missing_fields_and_closest_names(tmp_path
     assert "manifest field firewall_public" in log
     assert "Closest check names in the export" in log
     assert "Windows Firewall: Public: Firewall state" in log
+
+
+# --- NO RESULTS: nothing to record is stated, never pushed -------------------
+
+
+def test_no_results_reason_covers_each_empty_case():
+    checks = [_check("dns", "check_name_exact", "4.9 DNS")]
+    assert "no hosts" in no_results_reason(analyze_manifest(checks, []), 100.0)
+    assert "no compliance results" in no_results_reason(analyze_manifest(checks, [_host()]), 100.0)
+    assert "none match" in no_results_reason(analyze_manifest(checks, [_host("1.1 other")]), 0.0)
+    assert no_results_reason(analyze_manifest(checks, [_host("4.9 DNS")]), 100.0) is None
+    assert no_results_reason(analyze_manifest(checks, [_host("4.9 DNS")]), 50.0) is None
+
+
+def test_cli_dry_run_with_nothing_matching_says_no_results(tmp_path):
+    checks = tmp_path / "checks.yaml"
+    checks.write_text(
+        "schema_version: 1\n"
+        "checks:\n"
+        "  - field: nothing_here\n"
+        "    label: x\n"
+        "    match:\n"
+        "      check_name_exact: \"9.9.9 A check no scan contains\"\n"
+        "    required: true\n"
+    )
+    result = _cli(_base_args(checks, FIXTURES / "sample_small.nessus"), tmp_path)
+    assert result.returncode == 0, result.stderr  # dry-run is report-only
+    assert "NO RESULTS" in result.stdout
+    assert "Nothing sent to Drata" in result.stdout
+    assert "NO RESULTS:" in result.stdout  # the failed gate line
+    log = (tmp_path / "logs" / "collector.log").read_text()
+    assert "NO RESULTS for scan" in log

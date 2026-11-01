@@ -22,7 +22,7 @@ drata:
 safety:
   min_hosts: 50
   max_shrink_ratio: 0.8
-  min_manifest_coverage_pct: 90
+  min_manifest_coverage_pct: 90  # below this the run still pushes (missing checks = NOT_FOUND) and warns; zero matches = NO RESULTS, nothing sent
 
 runtime:
   artifacts_dir: "C:/ProgramData/NessusDrataCollector/artifacts"

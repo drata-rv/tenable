@@ -56,14 +56,30 @@ def _gate_max_shrink_ratio(
     return GateResult("max_shrink_ratio", passed, reason)
 
 
-def _gate_manifest_coverage(coverage_pct: float, min_manifest_coverage_pct: float) -> GateResult:
-    passed = coverage_pct >= min_manifest_coverage_pct
-    reason = (
-        f"coverage {coverage_pct:.1f}% >= min_manifest_coverage_pct {min_manifest_coverage_pct}%"
-        if passed
-        else f"coverage {coverage_pct:.1f}% is below min_manifest_coverage_pct {min_manifest_coverage_pct}%"
+def _gate_manifest_coverage(
+    coverage_pct: float,
+    min_manifest_coverage_pct: float,
+    no_results_reason: Optional[str],
+) -> GateResult:
+    """Fails only when the scan produced NO results for the manifest. Partial
+    coverage passes: the missing checks are recorded as NOT_FOUND (inconclusive,
+    never a pass) so the matching Custom Tests fail visibly in Drata.
+    min_manifest_coverage_pct is the level below which that is called out.
+    """
+    if no_results_reason:
+        return GateResult("manifest_coverage", False, f"NO RESULTS: {no_results_reason}")
+    if coverage_pct < min_manifest_coverage_pct:
+        return GateResult(
+            "manifest_coverage",
+            True,
+            f"coverage {coverage_pct:.1f}% is below min_manifest_coverage_pct "
+            f"{min_manifest_coverage_pct}%: pushing anyway, missing checks recorded as NOT_FOUND",
+        )
+    return GateResult(
+        "manifest_coverage",
+        True,
+        f"coverage {coverage_pct:.1f}% >= min_manifest_coverage_pct {min_manifest_coverage_pct}%",
     )
-    return GateResult("manifest_coverage", passed, reason)
 
 
 def _gate_duplicate_ids(duplicate_ids: Sequence[str]) -> GateResult:
@@ -121,6 +137,7 @@ def evaluate_gates(
     min_hosts: int,
     max_shrink_ratio: float,
     min_manifest_coverage_pct: float,
+    no_results_reason: Optional[str] = None,
 ) -> tuple[GateResult, ...]:
     """Evaluate all 6 gates and return them in spec order, always. Never
     raises, never exits, never bypasses anything — see apply_force_bypass
@@ -129,7 +146,7 @@ def evaluate_gates(
     return (
         _gate_min_hosts(record_count, min_hosts),
         _gate_max_shrink_ratio(record_count, previous_record_count, max_shrink_ratio),
-        _gate_manifest_coverage(coverage_pct, min_manifest_coverage_pct),
+        _gate_manifest_coverage(coverage_pct, min_manifest_coverage_pct, no_results_reason),
         _gate_duplicate_ids(duplicate_ids),
         _gate_parse_mode(parse_mode, allow_degraded_session),
         _gate_batch_uploads(batch_upload_results),

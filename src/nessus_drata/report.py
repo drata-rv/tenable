@@ -36,6 +36,8 @@ class RunReport:
     exit_code: int
     # Manifest fields with no match on at least one host (names, not values).
     manifest_missing_fields: tuple = ()
+    # Set when the scan had nothing to record; nothing is sent to Drata then.
+    no_results_reason: Optional[str] = None
 
 
 def write_report(reports_dir: Path, report: RunReport) -> Path:
@@ -48,6 +50,11 @@ def write_report(reports_dir: Path, report: RunReport) -> Path:
 
 def print_console_summary(report: RunReport) -> None:
     print(f"run_id={report.run_id} exit_code={report.exit_code} parse_mode={report.parse_mode}")
+    if report.no_results_reason:
+        print(
+            f"  NO RESULTS for scan {report.scan_id} ({report.scan_name}): "
+            f"{report.no_results_reason}. Nothing sent to Drata."
+        )
     print(f"  host_count={report.host_count} record_count={report.record_count}")
     print(
         f"  manifest_coverage_pct={report.manifest_coverage_pct:.1f}% "

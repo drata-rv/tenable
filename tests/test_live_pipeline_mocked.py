@@ -707,3 +707,97 @@ def test_csv_degraded_session_proceeds_with_allow_degraded_flag(tmp_path, monkey
 
     assert exit_code == 0, "expected --allow-degraded-session to let the CSV session complete"
     assert session_actions == ["complete"]
+
+
+_EMPTY_EXPORT_TEMPLATE = (
+    b'<?xml version="1.0"?><NessusClientData_v2><Report name="r">%s</Report></NessusClientData_v2>'
+)
+_HOST_WITHOUT_COMPLIANCE = (
+    b'<ReportHost name="h"><HostProperties><tag name="netbios-name">WKS-1</tag>'
+    b"</HostProperties></ReportHost>"
+)
+
+
+def _live_run(tmp_path, monkeypatch, *, download_body, extra_args=(), checks=CHECKS):
+    monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
+    monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
+    monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nessus_drata.nessus_client.time.sleep", lambda _s: None)
+    config_path = _write_config(tmp_path)
+    _register_nessus_mocks(responses, download_body=download_body)
+    session_actions: list = []
+    _register_drata_mocks(responses, session_actions)
+    exit_code = cli.main(
+        ["--config", str(config_path), "--checks", str(checks), "run", *extra_args]
+    )
+    report = json.loads(next((tmp_path / "artifacts" / "reports").glob("*.json")).read_text())
+    return exit_code, session_actions, report
+
+
+@responses.activate
+def test_live_partial_coverage_pushes_not_found_instead_of_aborting(tmp_path, monkeypatch):
+    # One manifest check the scan does not contain: coverage 80% (< 90%) used
+    # to abort the whole run. It must now complete and record NOT_FOUND.
+    checks = tmp_path / "checks_with_missing.yaml"
+    checks.write_text(
+        CHECKS.read_text()
+        + "\n  - field: removed_from_audit\n"
+        + "    label: gone\n"
+        + "    match:\n"
+        + "      check_name_exact: \"9.9.9 A check the scan no longer has\"\n"
+        + "    required: true\n"
+    )
+    exit_code, session_actions, report = _live_run(
+        tmp_path, monkeypatch, download_body=SAMPLE_SMALL.read_bytes(), checks=checks
+    )
+
+    assert exit_code == 0
+    assert session_actions == ["complete"]
+    assert report["manifest_coverage_pct"] < 90
+    assert report["manifest_missing_fields"] == ["removed_from_audit"]
+    assert report["no_results_reason"] is None
+    gate = {g["name"]: g for g in report["safety_gates"]}["manifest_coverage"]
+    assert gate["passed"] is True and "NOT_FOUND" in gate["reason"]
+
+    payload = next((tmp_path / "artifacts" / "payloads").iterdir()) / "records.json"
+    records = json.loads(payload.read_text())
+    assert records and all(r["removed_from_audit"] == "NOT_FOUND" for r in records)
+    assert all(r["all_required_checks_passed"] is False for r in records)
+
+
+@responses.activate
+def test_live_scan_with_hosts_but_no_compliance_results_sends_nothing(tmp_path, monkeypatch):
+    exit_code, session_actions, report = _live_run(
+        tmp_path,
+        monkeypatch,
+        download_body=_EMPTY_EXPORT_TEMPLATE % _HOST_WITHOUT_COMPLIANCE,
+    )
+
+    assert exit_code == 5
+    assert session_actions == []
+    assert report["session_action"] == "aborted_pre_upload"
+    assert "no compliance results" in report["no_results_reason"]
+    gate = {g["name"]: g for g in report["safety_gates"]}["manifest_coverage"]
+    assert gate["passed"] is False and gate["reason"].startswith("NO RESULTS:")
+    assert load_last_run_state(tmp_path / "state").last_record_count is None
+
+
+@responses.activate
+def test_live_scan_with_no_hosts_sends_nothing_even_with_force(tmp_path, monkeypatch):
+    # --force bypasses min_hosts, which would otherwise let a zero-host export
+    # complete a session and wipe the dataset. NO RESULTS is never bypassed.
+    exit_code, session_actions, report = _live_run(
+        tmp_path,
+        monkeypatch,
+        download_body=_EMPTY_EXPORT_TEMPLATE % b"",
+        extra_args=("--force",),
+    )
+
+    assert exit_code == 5
+    assert session_actions == []
+    assert report["record_count"] == 0
+    assert "no hosts" in report["no_results_reason"]
+    gates = {g["name"]: g for g in report["safety_gates"]}
+    assert gates["min_hosts"]["passed"] is True  # bypassed by --force
+    assert gates["manifest_coverage"]["passed"] is False

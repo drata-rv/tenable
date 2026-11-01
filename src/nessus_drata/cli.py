@@ -21,7 +21,7 @@ from .config import (
     load_manifest_audit_file,
     redact,
 )
-from .diagnostics import analyze_manifest, log_diagnosis
+from .diagnostics import analyze_manifest, log_diagnosis, no_results_reason
 from .drata_client import DrataApiError, DrataClient, DrataResponseError, count_record_outcomes
 from .logging_setup import setup_logging
 from .nessus_client import NessusApiError, NessusClient
@@ -416,6 +416,7 @@ def _live_drata_push(
     records: tuple,
     parse_mode: str,
     summary,
+    no_results: Optional[str],
     prior_state: LastRunState,
     scan_id: int,
     scan_ended_at: str,
@@ -453,6 +454,7 @@ def _live_drata_push(
             min_hosts=config.safety.min_hosts,
             max_shrink_ratio=config.safety.max_shrink_ratio,
             min_manifest_coverage_pct=config.safety.min_manifest_coverage_pct,
+            no_results_reason=no_results,
         )
         return apply_force_bypass(gates, force=args.force)
 
@@ -546,7 +548,23 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
     )
     records = transform_result.records
     summary = transform_result.summary
-    log_diagnosis(logger, analyze_manifest(config.checks, hosts))
+    diagnosis = analyze_manifest(config.checks, hosts)
+    log_diagnosis(logger, diagnosis)
+    no_results = no_results_reason(diagnosis, summary.coverage_pct)
+    if no_results:
+        logger.error(
+            "NO RESULTS for scan %s (%s): %s. Nothing will be sent to Drata.",
+            scan_id,
+            scan_name,
+            no_results,
+        )
+    elif summary.manifest_misses:
+        logger.warning(
+            "partial results: %d check(s) have no match and are recorded as NOT_FOUND "
+            "(inconclusive, never a pass): %s",
+            len(summary.missing_fields),
+            ", ".join(summary.missing_fields),
+        )
 
     prior_state = load_last_run_state(Path(config.runtime.state_dir))
 
@@ -567,6 +585,7 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
             min_hosts=config.safety.min_hosts,
             max_shrink_ratio=config.safety.max_shrink_ratio,
             min_manifest_coverage_pct=config.safety.min_manifest_coverage_pct,
+            no_results_reason=no_results,
         )
         gates = apply_force_bypass(gates, force=args.force)
         for name in bypassed_gate_names(gates):
@@ -593,7 +612,16 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
             records_updated,
             gates,
         ) = _live_drata_push(
-            config, records, parse_mode, summary, prior_state, scan_id, scan_ended_at, args, logger
+            config,
+            records,
+            parse_mode,
+            summary,
+            no_results,
+            prior_state,
+            scan_id,
+            scan_ended_at,
+            args,
+            logger,
         )
 
     finished_at = _now_iso()
@@ -625,6 +653,7 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
         identity_fallbacks=summary.identity_fallbacks,
         duplicate_ids=summary.duplicate_ids,
         manifest_missing_fields=summary.missing_fields,
+        no_results_reason=no_results,
         batches_sent=batches_sent,
         records_created=records_created,
         records_updated=records_updated,
