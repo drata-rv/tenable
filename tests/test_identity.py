@@ -1,7 +1,3 @@
-"""Acceptance tests 7 and 8: AMBIGUOUS match outcomes and the identity
-fallback chain (spec Section 4.2 match-outcome table, Section 4.4 identity).
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -53,8 +49,6 @@ def test_sample_ambiguous_yields_ambiguous_field_and_counter():
     assert result.summary.manifest_ambiguous == 1
     assert result.summary.manifest_misses == 0
 
-    # AMBIGUOUS is inconclusive, not passed/failed, and forces the required
-    # gate false per Section 4.5 ("any inconclusive value forces false").
     assert record["checks_inconclusive"] == 1
     assert record["checks_passed"] == 1
     assert record["checks_failed"] == 0
@@ -78,15 +72,9 @@ def test_sample_no_netbios_identity_fallback_chain_and_counter():
     assert len(result.records) == 2
     fqdn_tier_record, ip_tier_record = result.records
 
-    # Host 1: no netbios, has host-fqdn -> fqdn tier. First label of the
-    # fqdn, uppercased. This tier does NOT increment identity_fallbacks
-    # (spec 4.4 ties the counter specifically to the ip tier).
     assert fqdn_tier_record["hostname"] == "WKS-UNREGISTERED-55"
     assert fqdn_tier_record["id"] == "nessus-wks-unregistered-55"
 
-    # Host 2: no netbios, no host-fqdn -> falls all the way to host-ip,
-    # used as-is (no case transform for an IP). This IS the tier that
-    # increments identity_fallbacks.
     assert ip_tier_record["hostname"] == "198.51.100.56"
     assert ip_tier_record["id"] == "nessus-198-51-100-56"
 
@@ -94,10 +82,6 @@ def test_sample_no_netbios_identity_fallback_chain_and_counter():
 
 
 def test_all_symbol_host_key_raises_instead_of_producing_empty_slug():
-    """Review finding: a host_key that slugs to "" (e.g. an all-symbol
-    netbios-name) must fail loudly, not silently produce a degenerate
-    "<prefix>-" record id with no diagnostic value.
-    """
     host = HostResult(
         host_key_candidates=HostKeyCandidates(
             netbios_name="###", host_fqdn=None, host_ip=None

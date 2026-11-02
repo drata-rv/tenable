@@ -1,12 +1,3 @@
-"""Acceptance test 6: transform output for sample_small.nessus must be
-byte-identical to tests/golden/sample_small.records.json.
-
-If this test fails, that is a signal about transform.py, not about the
-golden file — never regenerate the golden file to make a failing test pass.
-A deliberate, called-out transform change gets a deliberate, called-out
-golden-file update; see CLAUDE.md.
-"""
-
 from __future__ import annotations
 
 import json
@@ -19,10 +10,6 @@ from nessus_drata.transform import transform_host_results
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 GOLDEN_DIR = Path(__file__).parent / "golden"
 
-# Fixed, arbitrary-but-documented scan-level parameters. Not read from any
-# live source — transform.py is pure, so these are supplied by the caller
-# exactly as a later-phase Nessus API client would supply them from a real
-# scan's history/detail response.
 _SCAN_ID = 47
 _SCAN_NAME = "CIS Workstation Audit"
 _SCAN_ENDED_AT = "2026-08-18T04:15:00Z"

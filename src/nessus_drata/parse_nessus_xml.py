@@ -1,19 +1,3 @@
-"""Primary .nessus XML parser.
-
-Per spec Section 3.7 / 8, .nessus files use the `cm:` prefix on compliance
-elements but frequently do not declare `xmlns:cm` on the root element. Strict
-XML parsers raise `unbound prefix` and abort on that shape. Two mitigations,
-both mandatory and both applied here:
-
-1. Parse with `lxml.etree.iterparse(..., recover=True, huge_tree=True)`.
-2. Match every element by local name only (strip any `{uri}` or `prefix:`
-   component) — never match on qualified tag or namespace map.
-
-Iterates on `ReportHost` end events and clears processed elements so a
-hundred-host export does not sit fully in memory. Pure I/O + parsing module;
-no transform logic lives here — that is transform.py's job in a later phase.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -28,34 +12,18 @@ logger = logging.getLogger("nessus_drata.parse")
 
 _ROOT_TAG = "NessusClientData_v2"
 
-# libxml2 error types seen on EVERY healthy export, because `cm:` is used
-# without an xmlns declaration (spec 3.7). Pure noise; never reported.
 _NAMESPACE_NOISE = frozenset({"NS_ERR_UNDEFINED_NAMESPACE"})
 
-# Unclosed element at end of input: the download was cut short. recover=True
-# would otherwise hand back whatever parsed before the cut as if it were the
-# whole export, silently dropping every check after it.
 _TRUNCATION_TYPES = frozenset({"ERR_TAG_NOT_FINISHED"})
 
 
 class ExportParseError(Exception):
-    """The file is not a complete .nessus export (empty, not XML, or cut
-    short). Raised instead of returning partial data: an incomplete export
-    is inconclusive evidence and must never be recorded as a result.
-    """
+    pass
 
 
 def local_name(tag: str) -> str:
-    """Strip any `{uri}` or `prefix:` component from an element tag, leaving
-    the bare local name for comparison. This is the only tag-matching path
-    permitted by the spec (Section 3.7) — never match on qualified tag or
-    namespace map, since `.nessus` files often leave `cm:` undeclared.
-    """
-    # lxml gives Clark-notation tags for namespaced elements: "{uri}local".
     if "}" in tag:
         tag = tag.rsplit("}", 1)[1]
-    # Undeclared-prefix elements under recover=True keep the literal
-    # "prefix:local" text as the tag instead of raising, so also strip that.
     if ":" in tag:
         tag = tag.rsplit(":", 1)[1]
     return tag
@@ -63,10 +31,6 @@ def local_name(tag: str) -> str:
 
 def _find_child(elem, name: str):
     for child in elem:
-        # Comments and processing instructions are real children in lxml's
-        # tree but carry a callable (not str) .tag — never real elements,
-        # so they can never match a local-name lookup. Skip them rather
-        # than let local_name() raise on a non-string tag.
         if not isinstance(child.tag, str):
             continue
         if local_name(child.tag) == name:
@@ -105,19 +69,8 @@ def _build_compliance_item(report_item) -> Optional[ComplianceItem]:
     check_name_elem = _find_child(report_item, "compliance-check-name")
     check_name = _text_or_none(check_name_elem)
     if not check_name:
-        # Malformed edge case: gated in as compliance but no usable check
-        # name. Skip rather than yield a ComplianceItem with an empty name.
         return None
 
-    # compliance-result missing or empty (a self-closing <cm:compliance-result/>
-    # is a real shape this fixture set already demonstrates for other fields,
-    # e.g. sample_small.nessus's <cm:compliance-actual-value/>) means the
-    # result genuinely cannot be determined -- normalize to "ERROR" rather
-    # than emit None, which would (a) violate ComplianceItem.result's non-
-    # Optional str contract and (b) surface as JSON null against a
-    # non-nullable schema field on push (spec Section 5.4: 400 schema
-    # validation failure). ERROR is exactly the spec-defined outcome for
-    # "could not be conclusively evaluated" (Section 3.6).
     raw_result = _text_or_none(_find_child(report_item, "compliance-result"))
     result = raw_result if raw_result else "ERROR"
 
@@ -145,9 +98,6 @@ def _build_host_properties(report_host) -> dict[str, str]:
 
 
 def _clear_element(elem) -> None:
-    """Bound memory on large exports: clear the processed element and drop
-    now-empty preceding siblings, per the standard iterparse pattern.
-    """
     elem.clear()
     parent = elem.getparent()
     if parent is not None:
@@ -163,10 +113,6 @@ def _size_of(path: Union[str, Path]) -> int:
 
 
 def _check_parser_health(context, path: Union[str, Path], saw_root: bool) -> None:
-    """After the stream is consumed, decide whether recover=True papered over
-    a file we must not trust. Raises on a non-.nessus or truncated file;
-    warns on other recoverable damage.
-    """
     if not saw_root:
         raise ExportParseError(
             f"{path}: no <{_ROOT_TAG}> document found (file is {_size_of(path)} bytes). "
@@ -192,20 +138,6 @@ def _check_parser_health(context, path: Union[str, Path], saw_root: bool) -> Non
 
 
 def parse_nessus_xml(path: Union[str, Path]) -> Iterator[HostResult]:
-    """Parse a .nessus XML export into one HostResult per ReportHost.
-
-    Yields HostResult objects lazily via iterparse on ReportHost end events.
-    Plain vulnerability ReportItem elements (no <compliance>true</compliance>
-    and no compliance-check-name child) are skipped silently and never
-    counted. A ReportHost with zero compliance items still yields a
-    HostResult with an empty compliance_items tuple.
-
-    Raises ExportParseError once the stream ends if the file is empty, not a
-    .nessus document, or truncated, so callers that materialise the result
-    (list(...)) never see partial data. Other recoverable XML damage (stray
-    control characters, unescaped `&`) is logged as a warning and parsing
-    continues.
-    """
     context = etree.iterparse(
         str(path),
         events=("end",),
@@ -217,7 +149,6 @@ def parse_nessus_xml(path: Union[str, Path]) -> Iterator[HostResult]:
     try:
         for _event, elem in context:
             if not isinstance(elem.tag, str):
-                # Comment / processing-instruction node; never a ReportHost.
                 continue
             tag = local_name(elem.tag)
             if tag == _ROOT_TAG:

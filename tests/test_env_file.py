@@ -1,5 +1,3 @@
-"""The .env loader: parsing, precedence, and the CLI wiring. No network."""
-
 from __future__ import annotations
 
 import os
@@ -110,9 +108,6 @@ def test_missing_file_ok_unless_required(tmp_path, clean_env):
         load_env_file(tmp_path / "nope.env", required=True)
 
 
-# ---- CLI wiring -----------------------------------------------------------
-
-
 def _stripped_env():
     env = os.environ.copy()
     for name in REQUIRED_ENV_VARS:
@@ -185,7 +180,7 @@ def test_cli_explicit_env_file_and_real_env_precedence(cfg_dir, tmp_path):
     result = _validate(cfg_dir, tmp_path, env, "--env-file", str(custom))
     assert result.returncode == 0, result.stderr
     assert "****1111" in result.stdout
-    assert "****7777" in result.stdout  # real env var beat the file
+    assert "****7777" in result.stdout
     assert "****3333" not in result.stdout
 
 

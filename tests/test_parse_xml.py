@@ -1,11 +1,3 @@
-"""Acceptance tests for the primary .nessus XML parser (spec Section 12,
-tests 4 and 5, plus the fixture-proving tests implied by Section 10).
-
-Scope note: this module tests parse_nessus_xml.py only. No golden-file /
-transform assertions and no rollup counts (checks_evaluated, etc.) belong
-here — those are transform.py's contract in a later phase.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -40,12 +32,10 @@ def test_sample_small_yields_three_hosts_with_mixed_results():
     assert "FAILED" in all_results
     assert "WARNING" in all_results
 
-    # Every host in this fixture carries a netbios-name.
     for host in results:
         assert host.host_key_candidates.netbios_name is not None
         assert host.source_fidelity == "full"
 
-    # Continuity check: the spec's own example check name is present.
     check_names = {item.check_name for host in results for item in host.compliance_items}
     assert "4.5 Ensure 'Windows Firewall: Public: Firewall state' is 'On'" in check_names
 
@@ -60,8 +50,6 @@ def test_sample_undeclared_ns_parses_without_exception():
     assert "4.5 Ensure 'Windows Firewall: Public: Firewall state' is 'On'" in check_names
     assert "18.9.47.5.1 Ensure 'Turn off Windows Defender' is 'Disabled'" in check_names
 
-    # Fields beyond the six consumed by the MVP must not leak onto the
-    # ComplianceItem shape (compliance-check-id, -info, -solution excluded).
     firewall_item = next(
         item for item in host.compliance_items
         if item.check_name.startswith("4.5 Ensure 'Windows Firewall: Public")
@@ -81,14 +69,12 @@ def test_sample_with_vulns_excludes_vulnerability_report_items():
     assert len(results) == 1
 
     host = results[0]
-    # Fixture authored 2 vuln ReportItems + 2 compliance ReportItems.
     assert len(host.compliance_items) == 2
 
     check_names = {item.check_name for item in host.compliance_items}
     assert "4.5 Ensure 'Windows Firewall: Public: Firewall state' is 'On'" in check_names
     assert "2.3.1.1 Ensure 'Accounts: Administrator account status' is 'Disabled'" in check_names
 
-    # None of the vulnerability plugin names/synopses leaked in as a check_name.
     for item in host.compliance_items:
         assert "TLS Library" not in item.check_name
         assert "Patch Missing" not in item.check_name
@@ -103,11 +89,9 @@ def test_sample_ambiguous_yields_two_items_same_check_name():
     matching = [item for item in host.compliance_items if item.check_name == target_name]
     assert len(matching) == 2
 
-    # Not deduped: the two results are surfaced as authored (conflicting).
     results_seen = {item.result for item in matching}
     assert results_seen == {"FAILED", "PASSED"}
 
-    # The unambiguous check on the same host is also present, untouched.
     assert len(host.compliance_items) == 3
 
 
@@ -129,12 +113,6 @@ def test_sample_no_netbios_identity_fallback_candidates():
 
 
 def test_missing_or_empty_compliance_result_normalizes_to_error(tmp_path):
-    """Review finding: a self-closing/empty <cm:compliance-result/> (a real
-    shape this fixture set already demonstrates for other compliance-*
-    fields, e.g. sample_small.nessus's actual-value) must not surface as
-    None -- it must normalize to "ERROR" (spec 3.6's own outcome for "could
-    not be conclusively evaluated"), never silently pass through as null.
-    """
     xml_path = tmp_path / "missing_result.nessus"
     xml_path.write_text(
         """<?xml version="1.0" encoding="UTF-8"?>

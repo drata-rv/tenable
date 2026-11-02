@@ -1,7 +1,3 @@
-"""Acceptance test 19: no full API key, Authorization value, or X-ApiKeys
-value anywhere in the log after any run, including a failing one.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -33,9 +29,9 @@ def test_secrets_are_redacted_to_last_4_chars(tmp_path):
     assert secret_nessus_secret not in log_text
     assert secret_drata not in log_text
 
-    assert "****2345" in log_text  # last 4 of secret_nessus_access
-    assert "****7890" in log_text  # last 4 of secret_nessus_secret
-    assert "****f999" in log_text  # last 4 of secret_drata
+    assert "****2345" in log_text
+    assert "****7890" in log_text
+    assert "****f999" in log_text
 
     logging.getLogger().handlers.clear()
 

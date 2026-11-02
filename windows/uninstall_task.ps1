@@ -1,12 +1,3 @@
-<#
-.SYNOPSIS
-  Unregisters the Drata Nessus CIS Collector Windows Scheduled Task.
-  Run from an elevated PowerShell prompt.
-
-.PARAMETER TaskName
-  Name of the scheduled task to remove (must match the name used at
-  install time in install_task.ps1).
-#>
 param(
     [string]$TaskName = "Drata Nessus CIS Collector"
 )

@@ -1,10 +1,3 @@
-"""Rotating file + console logging with secret redaction (spec Section 8/9.2).
-
-Never let a full API key, an Authorization value, or an X-ApiKeys value reach
-a log line. The redaction filter scrubs any configured secret value down to
-its last 4 characters wherever it appears in a rendered message.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -19,11 +12,6 @@ _FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
 class RedactionFilter(logging.Filter):
-    """Replaces every configured secret value with '****<last4>' in the
-    rendered message. Applied to every handler, not just one, so nothing
-    bypasses it via a differently-configured handler.
-    """
-
     def __init__(self, secrets: Iterable[str]):
         super().__init__()
         self._secrets = tuple(s for s in secrets if s)
@@ -44,11 +32,6 @@ class RedactionFilter(logging.Filter):
 
 
 def setup_logging(log_dir: Path, log_level: str = "INFO", secrets: Iterable[str] = ()) -> None:
-    """Configure the root logger with a rotating file handler (5MB, 5
-    backups, UTF-8) and a console handler, both carrying the redaction
-    filter. Safe to call more than once (e.g. across tests) — clears any
-    handlers this function previously installed.
-    """
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "collector.log"
@@ -67,10 +50,6 @@ def setup_logging(log_dir: Path, log_level: str = "INFO", secrets: Iterable[str]
     file_handler.addFilter(redaction_filter)
     root.addHandler(file_handler)
 
-    # Force UTF-8 on the console stream where possible — the real fix for
-    # Windows' legacy console code page is PYTHONUTF8=1 / PYTHONIOENCODING=utf-8
-    # set by windows/run_collector.cmd (Phase 7), but reconfiguring here is a
-    # harmless extra safety net when the interpreter supports it.
     stream = sys.stdout
     if hasattr(stream, "reconfigure"):
         try:

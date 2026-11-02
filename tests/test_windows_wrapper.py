@@ -1,6 +1,3 @@
-"""windows/run_collector.cmd must hand argparse an argv it accepts, and must
-propagate the collector's exit code (spec 9.3)."""
-
 from __future__ import annotations
 
 import re
@@ -14,7 +11,6 @@ WRAPPER = Path(__file__).resolve().parents[1] / "windows" / "run_collector.cmd"
 
 def _collector_argv() -> list[str]:
     text = WRAPPER.read_text()
-    # Join "^" line continuations, then take the interpreter invocation.
     joined = re.sub(r"\^\s*\r?\n\s*", " ", text)
     line = next(l for l in joined.splitlines() if "-m nessus_drata.cli" in l)
     after = line.split("-m nessus_drata.cli", 1)[1]

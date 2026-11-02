@@ -1,5 +1,3 @@
-"""Load and validate config.yaml and checks.yaml, and optionally a .env of secrets."""
-
 from __future__ import annotations
 
 import logging
@@ -41,7 +39,7 @@ REQUIRED_ENV_VARS = ("NESSUS_ACCESS_KEY", "NESSUS_SECRET_KEY", "DRATA_API_KEY")
 
 
 class ConfigError(Exception):
-    """Raised for any config, manifest, or data-validation error. Maps to exit code 2."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -89,7 +87,7 @@ class RuntimeConfig:
 class CheckEntry:
     field: str
     label: str
-    match_type: str  # one of MATCH_KEYS_IN_PRECEDENCE
+    match_type: str
     match_value: str
     required: bool = False
 

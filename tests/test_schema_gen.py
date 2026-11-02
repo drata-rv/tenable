@@ -1,13 +1,3 @@
-"""Acceptance test 9 (schema-generation half): gen-schema output structure,
-plus a minimal structural validation of transform's own records against it.
-
-Full dry-run payload validation happens in Phase 4 once `run --dry-run`
-exists; this test proves schema_gen.py's contract now on already-available
-transform output. No `jsonschema` dependency is added (Section 6.3 pins
-exactly requests/lxml/PyYAML + pytest/responses for tests) — the type check
-below is a deliberately minimal stand-in, not a general JSON Schema validator.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -35,7 +25,6 @@ def _type_matches(value, type_spec) -> bool:
 
 
 def _validate_record(record: dict, schema: dict) -> list[str]:
-    """Return a list of validation error strings (empty means valid)."""
     errors = []
     for prop, spec in schema["properties"].items():
         if prop not in record:
@@ -53,7 +42,6 @@ def test_generate_schema_has_base_properties_and_dynamic_check_fields():
     assert schema["type"] == "object"
     assert schema["additionalProperties"] is True
 
-    # displayNameKey ("hostname") must be a top-level property (spec 4.3/5.2).
     assert "hostname" in schema["properties"]
     assert schema["properties"]["hostname"] == {"type": "string"}
 
@@ -74,12 +62,10 @@ def test_generate_schema_has_base_properties_and_dynamic_check_fields():
     ):
         assert base_field in schema["properties"]
 
-    # host_fqdn / operating_system / audit_file are nullable.
     assert schema["properties"]["host_fqdn"]["type"] == ["string", "null"]
     assert schema["properties"]["operating_system"]["type"] == ["string", "null"]
     assert schema["properties"]["audit_file"]["type"] == ["string", "null"]
 
-    # Every manifest check becomes a string-typed dynamic property.
     for check in checks:
         assert schema["properties"][check.field] == {"type": "string"}
 

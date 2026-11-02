@@ -1,9 +1,3 @@
-"""CLI-level integration tests for the `run` command (acceptance tests 9
-(dry-run payload half), 17, 18 at the CLI boundary, plus the Phase 4 stop
-condition itself: --dry-run writes valid payloads, zero network calls, zero
-credentials required when --fixtures is given).
-"""
-
 from __future__ import annotations
 
 import json
@@ -54,12 +48,8 @@ def test_dry_run_with_fixtures_requires_zero_credentials(tmp_path):
         env=env,
         cwd=tmp_path,
     )
-    # cwd=tmp_path so relative artifacts/state/log dirs land in an isolated
-    # scratch directory, not the real repo tree — but --config/--checks
-    # paths are relative to REPO_ROOT, so pass absolute paths instead.
-    assert result.returncode != 127, result.stderr  # sanity: module resolvable
+    assert result.returncode != 127, result.stderr
 
-    # Re-run with absolute config/checks paths against the isolated tmp cwd.
     result = _run_cli(
         [
             "--config",
@@ -144,18 +134,10 @@ def test_acceptance_17_second_run_while_lock_held_exits_six(tmp_path):
     assert result.returncode == 6
     assert "lock held" in result.stderr.lower()
 
-    # No payloads should have been written — the lock check happens before
-    # any pipeline work.
     assert not (tmp_path / "artifacts" / "payloads").exists()
 
 
 def test_force_and_allow_degraded_session_work_after_run(tmp_path):
-    """Review finding: --force/--allow-degraded-session must actually work
-    when placed after `run` (where --dry-run/--fixtures already live) --
-    they previously only parsed correctly before the subcommand, and (per a
-    since-corrected draft of this same fix) briefly risked silently
-    resetting to False if defined on both parsers instead of only here.
-    """
     result = _run_cli(
         [
             "--config",

@@ -1,13 +1,3 @@
-"""Operator-facing explanation of how the checks manifest lines up with what a
-Nessus export actually contains.
-
-The manifest is the contract (spec 4.2); when the audited checks change
-underneath it, the run must say WHICH manifest entries lost their match, what
-the export contains instead, and which checks in the export nothing tracks.
-`analyze_manifest` is pure; `log_diagnosis` only writes log lines. Nothing here
-changes a record, a field name, or a gate outcome.
-"""
-
 from __future__ import annotations
 
 import difflib
@@ -44,7 +34,7 @@ class ManifestDiagnosis:
 def analyze_manifest(
     checks: Sequence[CheckEntry], hosts: Sequence[HostResult]
 ) -> ManifestDiagnosis:
-    first_seen: dict[str, str] = {}  # normalized name -> name as exported
+    first_seen: dict[str, str] = {}
     item_count = 0
     for host in hosts:
         for item in host.compliance_items:
@@ -86,9 +76,6 @@ def analyze_manifest(
 
 
 def no_results_reason(diagnosis: ManifestDiagnosis, coverage_pct: float) -> Optional[str]:
-    """Why the scan gave nothing to record, or None when at least one manifest
-    check matched. Zero hosts is checked here because coverage_pct reads 100%
-    when there are no hosts to attempt."""
     if diagnosis.host_count == 0:
         return "the scan result has no hosts"
     if diagnosis.item_count == 0:

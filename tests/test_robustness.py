@@ -1,8 +1,3 @@
-"""The collector must survive the scan changing underneath the manifest and
-must say what changed: tolerant check-name matching, fail-closed on damaged
-exports, and diagnostics that name the manifest entries that lost their match.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -50,16 +45,13 @@ def _check(field, match_type, value, required=True):
     return CheckEntry(field=field, label=field, match_type=match_type, match_value=value, required=required)
 
 
-# --- matching survives cosmetic edits to the audit -------------------------
-
-
 @pytest.mark.parametrize(
     "exported",
     [
-        "4.9 Ensure ‘DNS’ is set",  # curly quotes
-        "4.9  Ensure 'DNS'   is set",  # doubled spaces
-        "4.9 Ensure 'DNS' is set",  # non-breaking space
-        " 4.9 Ensure 'DNS' is set\n",  # surrounding whitespace
+        "4.9 Ensure ‘DNS’ is set",
+        "4.9  Ensure 'DNS'   is set",
+        "4.9\u00a0Ensure 'DNS' is set",
+        " 4.9 Ensure 'DNS' is set\n",
     ],
 )
 def test_exact_match_ignores_whitespace_and_quote_style(exported):
@@ -98,9 +90,6 @@ def test_summary_names_missing_fields_in_manifest_order():
     result = _transform([_host("B")], checks)
     assert result.summary.missing_fields == ("a_check", "c_check")
     assert result.summary.manifest_misses == 2
-
-
-# --- diagnostics explain a broken contract ----------------------------------
 
 
 def test_diagnosis_offers_closest_names_and_lists_untracked_checks():
@@ -145,10 +134,8 @@ def test_log_diagnosis_caps_long_name_lists(caplog):
     diag = analyze_manifest([_check("dns", "check_name_exact", names[0])], [_host(*names)])
     with caplog.at_level(logging.INFO, logger="t"):
         log_diagnosis(logging.getLogger("t"), diag)
-    assert "+34 more" in caplog.text  # 59 untracked, 25 shown
+    assert "+34 more" in caplog.text
 
-
-# --- the parser refuses damaged exports instead of returning partial data ---
 
 _HEAD = (
     b'<?xml version="1.0"?><NessusClientData_v2><Report name="r"><ReportHost name="h">'
@@ -205,9 +192,6 @@ def test_healthy_fixtures_parse_without_warnings(fixture, caplog):
     assert caplog.text == ""
 
 
-# --- end to end through the CLI --------------------------------------------
-
-
 def _cli(args, cwd):
     return subprocess.run(
         [sys.executable, "-m", "nessus_drata.cli", *args],
@@ -248,15 +232,12 @@ def test_cli_manifest_mismatch_reports_missing_fields_and_closest_names(tmp_path
         "    required: true\n"
     )
     result = _cli(_base_args(checks, FIXTURES / "sample_small.nessus"), tmp_path)
-    assert result.returncode == 0, result.stderr  # dry-run is report-only
+    assert result.returncode == 0, result.stderr
     assert "manifest_missing_fields=firewall_public" in result.stdout
     log = (tmp_path / "logs" / "collector.log").read_text()
     assert "manifest field firewall_public" in log
     assert "Closest check names in the export" in log
     assert "Windows Firewall: Public: Firewall state" in log
-
-
-# --- NO RESULTS: nothing to record is stated, never pushed -------------------
 
 
 def test_no_results_reason_covers_each_empty_case():
@@ -280,9 +261,9 @@ def test_cli_dry_run_with_nothing_matching_says_no_results(tmp_path):
         "    required: true\n"
     )
     result = _cli(_base_args(checks, FIXTURES / "sample_small.nessus"), tmp_path)
-    assert result.returncode == 0, result.stderr  # dry-run is report-only
+    assert result.returncode == 0, result.stderr
     assert "NO RESULTS" in result.stdout
     assert "Nothing sent to Drata" in result.stdout
-    assert "NO RESULTS:" in result.stdout  # the failed gate line
+    assert "NO RESULTS:" in result.stdout
     log = (tmp_path / "logs" / "collector.log").read_text()
     assert "NO RESULTS for scan" in log

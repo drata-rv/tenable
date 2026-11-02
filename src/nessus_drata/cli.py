@@ -320,9 +320,6 @@ def _upload_batch_with_409_retry(
     batch: list,
     logger: logging.Logger,
 ) -> tuple[bool, Optional[dict]]:
-    """Upload one batch. On a 409 (session state conflict), cancel any
-    stale session and retry this exact batch once.
-    """
     try:
         body = client.upload_session_batch(
             config.drata.connection_id, config.drata.resource_id, session_id, batch
@@ -413,7 +410,7 @@ def _live_drata_push(
         )
         batch_upload_results.append(success)
         if not success:
-            break  # spec: a single failed batch aborts completion
+            break
         batches_sent += 1
         created, updated = count_record_outcomes(response_body)
         records_created += created
@@ -661,10 +658,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to a .nessus or .csv fixture file; skips the Nessus client entirely",
     )
-    # --force and --allow-degraded-session live ONLY here, not on the
-    # top-level parser -- see the comment above parser.add_argument calls
-    # for why defining them on both would silently misbehave. `run` is the
-    # only command that reads either flag.
     run_parser.add_argument("--force", action="store_true")
     run_parser.add_argument("--allow-degraded-session", action="store_true")
 
@@ -681,12 +674,6 @@ _HANDLERS = {
 
 
 def _load_env_files(args: argparse.Namespace) -> None:
-    """Populate os.environ from a .env before any command reads a secret.
-    An explicit --env-file is exclusive and must exist. Otherwise try .env
-    next to --config (the config/ folder), then .env in the working
-    directory; earlier files win because load_env_file never overrides a
-    variable that is already set.
-    """
     if args.env_file:
         load_env_file(Path(args.env_file), required=True)
         return
@@ -706,7 +693,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     handler = _HANDLERS.get(args.command)
     if handler is None:
         parser.error(f"unknown command: {args.command}")
-        return EXIT_UNEXPECTED  # pragma: no cover — parser.error exits before this
+        return EXIT_UNEXPECTED  # pragma: no cover
 
     try:
         _load_env_files(args)
@@ -721,8 +708,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[NESSUS ERROR] {exc}", file=sys.stderr)
         return EXIT_NESSUS_ERROR
     except ExportParseError as exc:
-        # Incomplete/garbled export: a Nessus-side retryable problem, not a
-        # config or manifest fault, so it shares exit 3 with other export failures.
         print(f"[NESSUS EXPORT ERROR] {exc}", file=sys.stderr)
         return EXIT_NESSUS_ERROR
     except DrataApiError as exc:

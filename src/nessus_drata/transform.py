@@ -1,21 +1,3 @@
-"""Host-grain record builder (spec Section 4). Pure function of parsed input
-and manifest — no I/O, no wall-clock reads. This purity is what makes the
-golden-file test possible: every timestamp and identifier the caller wants
-baked into the output must be passed in explicitly.
-
-Judgment call (spec ambiguity, flagged per CLAUDE.md "use your best judgement"
-guidance): Sections 4.2 and 4.4 describe duplicate record ids and low manifest
-coverage as "exit code 2" hard failures, while Section 5.5 lists the identical
-two conditions as safety gates 3 and 4 (exit code 5, tied to session-cancel
-behavior with --force interaction). This module does NOT raise or exit for
-either condition — it only computes and exposes the numbers
-(CoverageSummary.duplicate_ids, .coverage_pct) so that a single
-enforcement point (safety.py, Phase 6) can apply the Section 5.5 gate
-mechanism consistently. Treat Section 5.5 as authoritative for these two
-checks; the exit-2 language in 4.2/4.4 appears to be an earlier, looser
-description of the same gate.
-"""
-
 from __future__ import annotations
 
 import re
@@ -28,9 +10,6 @@ from nessus_drata.models import HostKeyCandidates, HostResult
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
-# Typographic look-alikes that creep into audit descriptions when they are
-# edited in Word/Notepad/web forms. Mapped to their ASCII form so a cosmetic
-# edit to an audit file cannot turn a matching check into NOT_FOUND.
 _TYPOGRAPHY_MAP = str.maketrans(
     {
         "\u2018": "'",
@@ -51,10 +30,7 @@ _TYPOGRAPHY_MAP = str.maketrans(
 
 
 class TransformError(Exception):
-    """Raised only for input malformed enough that no record can be built at
-    all (a host with no netbios-name, host-fqdn, or host-ip whatsoever).
-    Maps to exit code 2 — this is not a safety gate, it's unusable data.
-    """
+    pass
 
 
 @dataclass(frozen=True)
@@ -66,8 +42,6 @@ class CoverageSummary:
     identity_fallbacks: int
     duplicate_ids: tuple[str, ...]
     coverage_pct: float
-    # Manifest fields that came back NOT_FOUND on at least one host, in
-    # manifest order. Lets the report and logs name WHICH checks went missing.
     missing_fields: tuple[str, ...] = ()
 
 
@@ -78,17 +52,10 @@ class TransformResult:
 
 
 def _slug(value: str) -> str:
-    """Section 4.4: lowercase, replace any run of non [a-z0-9] with '-',
-    strip leading/trailing '-'."""
     return _SLUG_RE.sub("-", value.lower()).strip("-")
 
 
 def _resolve_host_key(candidates: HostKeyCandidates) -> tuple[str, bool]:
-    """Section 4.4 fallback chain. Returns (host_key, used_ip_fallback).
-    used_ip_fallback drives the identity_fallbacks counter — spec is explicit
-    that ONLY the ip tier counts ("When id falls back to IP, increment
-    identity_fallbacks"), not the netbios->fqdn tier.
-    """
     if candidates.netbios_name:
         return candidates.netbios_name.upper(), False
     if candidates.host_fqdn:
@@ -102,12 +69,6 @@ def _resolve_host_key(candidates: HostKeyCandidates) -> tuple[str, bool]:
 
 
 def normalize_check_name(name: str) -> str:
-    """Comparison form of a check name: Unicode-compatibility normalized,
-    typographic quotes/dashes folded to ASCII, whitespace runs collapsed and
-    trimmed. Case is preserved. Applied to BOTH the manifest value and the
-    Nessus check name, so matching is still exact/prefix/contains (spec 4.2),
-    just immune to invisible formatting drift.
-    """
     folded = unicodedata.normalize("NFKC", name).translate(_TYPOGRAPHY_MAP)
     return " ".join(folded.split())
 
@@ -134,9 +95,6 @@ def transform_host_results(
     collected_at: str,
     audit_file: Optional[str] = None,
 ) -> TransformResult:
-    """Apply the checks manifest to each host, resolve identity, compute
-    rollups. See Sections 4.2, 4.4, 4.5 for the exact rules encoded here.
-    """
     records: list[dict] = []
     manifest_misses = 0
     manifest_ambiguous = 0
@@ -149,23 +107,12 @@ def transform_host_results(
             identity_fallbacks += 1
         host_key_slug = _slug(host_key)
         if not host_key_slug:
-            # An all-symbol/all-dash host_key (e.g. "###") slugs to "",
-            # producing a degenerate "<prefix>-" id that gives no
-            # diagnostic clue which host it came from and risks colliding
-            # with another equally-degenerate host. Fail loudly instead of
-            # emitting unusable evidence identity.
             raise TransformError(
                 f"host_key {host_key!r} slugs to an empty string; cannot "
                 f"build a stable record id"
             )
         record_id = f"{record_id_prefix}-{host_key_slug}"
 
-        # Field order below matches the spec Section 4.6 example exactly.
-        # Rollup keys are reserved here with placeholder values and updated
-        # in place after the checks loop below — updating a dict value never
-        # changes its insertion-order position, so per-check fields (added
-        # inside the loop) still land after these placeholders and before
-        # nothing, i.e. last, matching the example's field order.
         record: dict = {
             "id": record_id,
             "hostname": host_key,

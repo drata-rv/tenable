@@ -1,39 +1,3 @@
-<#
-.SYNOPSIS
-  Registers the Drata Nessus CIS Collector as a Windows Scheduled Task.
-  Run from an elevated PowerShell prompt (spec Section 9.4).
-
-.DESCRIPTION
-  Task settings mirror spec Section 9.4 exactly:
-    - ExecutionTimeLimit 2 hours (bounds a hung export)
-    - MultipleInstances IgnoreNew (belt-and-braces alongside the collector's
-      own state/collector.lock file)
-    - StartWhenAvailable (the host is a workstation, may be off at trigger time)
-    - RestartCount 2 / RestartInterval 15 minutes
-    - Runs on battery, does not stop if going on battery
-    - RunLevel Limited -- no elevation required. If the collector ever
-      appears to need admin rights, the directory permission model in
-      spec Section 9.1 is wrong; do not "fix" that by elevating this task.
-
-.PARAMETER RunAsUser
-  Domain\username of the dedicated service account the task runs as (spec
-  Section 14 assumed default: svc-drata-nessus). The account must already
-  exist; this script does not create it.
-
-.PARAMETER Password
-  The service account's password, as a SecureString (prompt interactively,
-  never pass as a plaintext command-line argument).
-
-.PARAMETER StartTime
-  Daily trigger time (spec Section 14 assumed default: 06:00 local).
-
-.PARAMETER InstallDir
-  Path to the collector's Program Files installation.
-
-.EXAMPLE
-  $cred = Get-Credential -UserName 'CONTOSO\svc-drata-nessus' -Message 'Service account password'
-  .\install_task.ps1 -RunAsUser $cred.UserName -Password $cred.Password
-#>
 param(
     [Parameter(Mandatory = $true)]
     [string]$RunAsUser,

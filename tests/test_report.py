@@ -1,7 +1,3 @@
-"""Basic correctness for report.py: the run report is written and read back
-faithfully, and the console summary doesn't crash on a representative report.
-"""
-
 from __future__ import annotations
 
 import json

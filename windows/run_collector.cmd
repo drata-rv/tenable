@@ -1,7 +1,5 @@
 @echo off
 setlocal
-REM App dir = the folder above windows\ (wherever the repo/venv lives).
-REM Config comes from %DATADIR%\config if present, else <app>\config.
 set "APPDIR=%~dp0.."
 set "DATADIR=C:\ProgramData\NessusDrataCollector"
 set "CFGDIR=%DATADIR%\config"
@@ -17,8 +15,6 @@ if not exist "%PY%" (
 
 if not exist "%DATADIR%\logs" mkdir "%DATADIR%\logs"
 
-REM Global flags go BEFORE the subcommand; argparse rejects them after "run".
-REM Secrets: machine-scope env vars, or %CFGDIR%\.env (read automatically).
 "%PY%" -m nessus_drata.cli ^
   --config "%CFGDIR%\config.yaml" ^
   --checks "%CFGDIR%\checks.yaml" ^

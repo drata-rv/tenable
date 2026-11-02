@@ -1,19 +1,3 @@
-"""Pure predicate functions over the run summary and prior state (spec
-Section 5.5). No side effects — no session cancellation, no logging, no I/O —
-so every gate is a plain function and fully unit-testable in isolation. The
-caller (cli.py's `run` command, later phase) is the only place that actually
-acts on these results: cancelling a session, exiting 5, or (in dry-run mode)
-just reporting them.
-
-Gate order and names match spec Section 5.5's numbered list exactly:
-  1. min_hosts
-  2. max_shrink_ratio
-  3. manifest_coverage
-  4. duplicate_ids
-  5. parse_mode
-  6. batch_uploads
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -61,11 +45,6 @@ def _gate_manifest_coverage(
     min_manifest_coverage_pct: float,
     no_results_reason: Optional[str],
 ) -> GateResult:
-    """Fails only when the scan produced NO results for the manifest. Partial
-    coverage passes: the missing checks are recorded as NOT_FOUND (inconclusive,
-    never a pass) so the matching Custom Tests fail visibly in Drata.
-    min_manifest_coverage_pct is the level below which that is called out.
-    """
     if no_results_reason:
         return GateResult("manifest_coverage", False, f"NO RESULTS: {no_results_reason}")
     if coverage_pct < min_manifest_coverage_pct:
@@ -139,10 +118,6 @@ def evaluate_gates(
     min_manifest_coverage_pct: float,
     no_results_reason: Optional[str] = None,
 ) -> tuple[GateResult, ...]:
-    """Evaluate all 6 gates and return them in spec order, always. Never
-    raises, never exits, never bypasses anything — see apply_force_bypass
-    for --force handling.
-    """
     return (
         _gate_min_hosts(record_count, min_hosts),
         _gate_max_shrink_ratio(record_count, previous_record_count, max_shrink_ratio),
@@ -154,11 +129,6 @@ def evaluate_gates(
 
 
 def apply_force_bypass(gates: Sequence[GateResult], force: bool) -> tuple[GateResult, ...]:
-    """--force bypasses gates 1 and 2 ONLY (min_hosts, max_shrink_ratio),
-    never 3 through 6. A bypassed gate is reported as passed with a reason
-    naming the bypass, so the caller can log a prominent warning for each
-    one it flips.
-    """
     if not force:
         return tuple(gates)
     bypassed = []
@@ -177,9 +147,6 @@ def apply_force_bypass(gates: Sequence[GateResult], force: bool) -> tuple[GateRe
 
 
 def bypassed_gate_names(gates: Sequence[GateResult]) -> tuple[str, ...]:
-    """Names of gates whose reason indicates a --force bypass, for the
-    caller to log a prominent warning naming each one (spec 5.5: "It must
-    log a prominent warning naming each bypassed gate.")."""
     return tuple(g.name for g in gates if g.reason.startswith("BYPASSED by --force"))
 
 

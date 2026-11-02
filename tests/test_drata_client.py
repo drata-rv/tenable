@@ -1,8 +1,3 @@
-"""Tests for drata_client.py -- raw authenticated HTTP calls against the Drata
-public API v2, retry-on-429/5xx behavior, and the Section 5.4 / 5.6 error
-handling contract. All HTTP is mocked via `responses`; zero real network calls.
-"""
-
 from __future__ import annotations
 
 import json
@@ -30,11 +25,6 @@ def make_client(**kwargs):
 
 def _auth_headers(calls):
     return [call.request.headers.get("Authorization") for call in calls]
-
-
-# ---------------------------------------------------------------------------
-# get_connection
-# ---------------------------------------------------------------------------
 
 
 @responses.activate
@@ -76,11 +66,6 @@ def test_authorization_header_is_bearer_prefixed_on_every_request():
 
     for header in _auth_headers(responses.calls):
         assert header == f"Bearer {FAKE_KEY}"
-
-
-# ---------------------------------------------------------------------------
-# list_sessions -- defensive shape handling
-# ---------------------------------------------------------------------------
 
 
 @responses.activate
@@ -135,11 +120,6 @@ def test_list_sessions_unexpected_shape_returns_empty_list():
     assert result == []
 
 
-# ---------------------------------------------------------------------------
-# cancel_session / complete_session -- correct body + URL
-# ---------------------------------------------------------------------------
-
-
 @responses.activate
 def test_cancel_session_sends_correct_body_and_url():
     responses.add(
@@ -173,11 +153,6 @@ def test_complete_session_sends_correct_body_and_url():
     assert len(responses.calls) == 1
     call = responses.calls[0]
     assert json.loads(call.request.body) == {"action": "complete"}
-
-
-# ---------------------------------------------------------------------------
-# upload_session_batch / upsert_records -- per-record statusCode inspection
-# ---------------------------------------------------------------------------
 
 
 @responses.activate
@@ -222,9 +197,6 @@ def test_upload_session_batch_raises_on_per_record_failure_despite_200():
 
 @responses.activate
 def test_upload_session_batch_raises_on_per_record_error_object_with_201():
-    """Live shape (2026-10-29): HTTP 200, per-record statusCode 201, but an
-    "error" object and the rejected record echoed under "data" -- the record
-    was NOT staged. Must raise, naming the record and the schema error."""
     responses.add(
         responses.POST,
         f"{BASE_URL}/public/v2/custom-connections/1/resources/2/sessions/sess-1",
@@ -295,11 +267,6 @@ def test_upsert_records_success_returns_body():
     assert body == [{"id": "host-1", "statusCode": 200}]
 
 
-# ---------------------------------------------------------------------------
-# 401 code 10000 -- checklist printed verbatim, no retry
-# ---------------------------------------------------------------------------
-
-
 @responses.activate
 def test_401_code_10000_prints_checklist_and_raises_no_retry(capsys):
     responses.add(
@@ -315,7 +282,7 @@ def test_401_code_10000_prints_checklist_and_raises_no_retry(capsys):
 
     assert exc_info.value.status_code == 401
     assert exc_info.value.error_code == 10000
-    assert len(responses.calls) == 1  # no retry
+    assert len(responses.calls) == 1
 
     captured = capsys.readouterr()
     assert DRATA_401_10000_CHECKLIST in captured.err
@@ -391,11 +358,6 @@ def test_409_no_retry_caller_must_handle():
     assert len(responses.calls) == 1
 
 
-# ---------------------------------------------------------------------------
-# 400 schema validation -- no retry, offending id surfaced
-# ---------------------------------------------------------------------------
-
-
 @responses.activate
 def test_400_schema_validation_no_retry_names_offending_record():
     responses.add(
@@ -411,12 +373,7 @@ def test_400_schema_validation_no_retry_names_offending_record():
 
     assert exc_info.value.status_code == 400
     assert "nessus-wks-0041" in str(exc_info.value)
-    assert len(responses.calls) == 1  # no retry on 400
-
-
-# ---------------------------------------------------------------------------
-# 429 retry honoring Retry-After
-# ---------------------------------------------------------------------------
+    assert len(responses.calls) == 1
 
 
 @responses.activate
@@ -445,7 +402,7 @@ def test_429_retries_honoring_retry_after_then_succeeds(monkeypatch):
 
     assert body == {"id": 1}
     assert len(responses.calls) == 2
-    assert sleep_calls == [1.0]  # honored Retry-After exactly, no backoff jitter
+    assert sleep_calls == [1.0]
 
 
 @responses.activate
@@ -467,11 +424,6 @@ def test_429_exhausts_retries_and_raises(monkeypatch):
 
     assert exc_info.value.status_code == 429
     assert len(responses.calls) == 3
-
-
-# ---------------------------------------------------------------------------
-# 5xx retry then success, and retry exhaustion
-# ---------------------------------------------------------------------------
 
 
 @responses.activate
@@ -506,7 +458,6 @@ def test_5xx_retries_then_succeeds(monkeypatch):
     assert body == {"id": 1}
     assert len(responses.calls) == 3
     assert len(sleep_calls) == 2
-    # monotonically increasing, bounded backoff
     assert sleep_calls[1] >= sleep_calls[0]
 
 
@@ -529,14 +480,7 @@ def test_max_retries_exhausted_raises_after_exact_attempt_count(monkeypatch):
         client.get_connection(1)
 
     assert exc_info.value.status_code == 503
-    # Internally consistent: this client makes exactly `max_retries` total
-    # attempts (no retry-after-the-last-failure sleep), then raises.
     assert len(responses.calls) == max_retries
-
-
-# ---------------------------------------------------------------------------
-# Secret redaction
-# ---------------------------------------------------------------------------
 
 
 @responses.activate
@@ -554,9 +498,9 @@ def test_api_key_never_appears_in_exception_string():
 
     message = str(exc_info.value)
     assert FAKE_KEY not in message
-    assert message.count("****") >= 0  # redacted form permitted
+    assert message.count("****") >= 0
     if "****" in message:
-        assert FAKE_KEY[-4:] in message  # only the last-4 redacted form
+        assert FAKE_KEY[-4:] in message
 
 
 @responses.activate
@@ -594,12 +538,6 @@ def test_unspecified_status_code_includes_response_body_in_message():
 
 def test_drata_response_error_is_a_drata_api_error():
     assert issubclass(DrataResponseError, DrataApiError)
-
-
-# ---------------------------------------------------------------------------
-# Connection-level failures (review finding: these were leaking as bare
-# requests exceptions, misclassified as exit code 1 instead of 4)
-# ---------------------------------------------------------------------------
 
 
 @responses.activate

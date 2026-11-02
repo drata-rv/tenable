@@ -1,10 +1,3 @@
-"""Last-run state and an exclusive run lock (spec Section 8).
-
-A hard reboot must not wedge the schedule permanently: a lock file whose PID
-is no longer running is stale and gets reclaimed automatically rather than
-requiring manual cleanup on a Windows box nobody is watching.
-"""
-
 from __future__ import annotations
 
 import json
@@ -20,8 +13,7 @@ LOCK_FILENAME = "collector.lock"
 
 
 class LockHeldError(Exception):
-    """Raised when another live process holds the run lock. Maps to exit
-    code 6 in the CLI."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -33,10 +25,6 @@ class LastRunState:
 
 
 def load_last_run_state(state_dir: Path) -> LastRunState:
-    """Returns an all-None state if no prior run is recorded — a first run
-    has nothing to compare against, which is exactly what safety gate 2
-    (shrink-ratio) needs to know to pass trivially.
-    """
     path = Path(state_dir) / STATE_FILENAME
     if not path.exists():
         return LastRunState()
@@ -60,10 +48,6 @@ def save_last_run_state(state_dir: Path, state: LastRunState) -> None:
 
 
 def _pid_is_running(pid: int) -> bool:
-    """Cross-platform liveness check with no extra dependency (psutil is not
-    in the allowed dependency list). The production target is Windows, but
-    this also needs to work correctly on POSIX dev/CI machines.
-    """
     if pid <= 0:
         return False
     if sys.platform == "win32":
@@ -77,13 +61,6 @@ def _pid_is_running(pid: int) -> bool:
         if handle:
             ctypes.windll.kernel32.CloseHandle(handle)
             return True
-        # OpenProcess returns NULL both when the PID doesn't exist AND when
-        # access is denied for a live process this token can't query (e.g.
-        # the collector runs as a service account but a second invocation
-        # happens under an admin's interactive/elevated session). Treating
-        # every failure as "not running" would reclaim a lock held by a
-        # genuinely live process — mirror the POSIX branch's PermissionError
-        # handling below, which treats "exists but not ours" as running.
         if ctypes.windll.kernel32.GetLastError() == ERROR_ACCESS_DENIED:
             return True
         return False
@@ -92,16 +69,12 @@ def _pid_is_running(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True  # exists, just owned by another user
+        return True
     return True
 
 
 @contextmanager
 def acquire_lock(state_dir: Path) -> Iterator[None]:
-    """Exclusive run lock at state_dir/collector.lock containing the holder's
-    PID. Raises LockHeldError if a live process holds it. A lock whose PID
-    is no longer running is treated as stale and silently reclaimed.
-    """
     state_dir = Path(state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     lock_path = state_dir / LOCK_FILENAME
@@ -116,7 +89,6 @@ def acquire_lock(state_dir: Path) -> Iterator[None]:
             raise LockHeldError(
                 f"lock held by running process {held_pid}: {lock_path}"
             )
-        # Stale lock (dead PID, or unreadable/corrupt lock file) — reclaim.
 
     lock_path.write_text(str(os.getpid()))
     try:

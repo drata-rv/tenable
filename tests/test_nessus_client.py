@@ -1,15 +1,3 @@
-"""Tests for nessus_client.py -- the read-only Tenable Nessus API client.
-
-All HTTP is mocked via `responses`; zero real network calls. Zero real
-credentials -- fake keys only.
-
-Highest-value test in this file is
-test_request_export_sends_json_body_not_form_encoded, which proves the
-json=/data= gotcha (spec Section 3.3) is actually guarded: a regression to
-`data=` would change the request Content-Type and body shape and fail this
-test.
-"""
-
 from __future__ import annotations
 
 import json
@@ -34,11 +22,6 @@ def make_client(**kwargs):
     defaults = dict(connect_timeout=1, read_timeout=1)
     defaults.update(kwargs)
     return NessusClient(BASE_URL, FAKE_ACCESS_KEY, FAKE_SECRET_KEY, **defaults)
-
-
-# ---------------------------------------------------------------------------
-# server_status / auth header
-# ---------------------------------------------------------------------------
 
 
 @responses.activate
@@ -80,11 +63,6 @@ def test_x_apikeys_header_exact_format_on_every_request():
         assert call.request.headers.get("X-ApiKeys") == expected
 
 
-# ---------------------------------------------------------------------------
-# list_scans
-# ---------------------------------------------------------------------------
-
-
 @responses.activate
 def test_list_scans_handles_null_scans_without_raising():
     responses.add(
@@ -114,11 +92,6 @@ def test_list_scans_with_folder_id_includes_query_param():
     assert "folder_id=5" in responses.calls[0].request.url
 
 
-# ---------------------------------------------------------------------------
-# get_scan
-# ---------------------------------------------------------------------------
-
-
 @responses.activate
 def test_get_scan_returns_body_as_is():
     body = {
@@ -131,17 +104,8 @@ def test_get_scan_returns_body_as_is():
     assert client.get_scan(47) == body
 
 
-# ---------------------------------------------------------------------------
-# request_export -- the json=/data= gotcha (spec Section 3.3)
-# ---------------------------------------------------------------------------
-
-
 @responses.activate
 def test_request_export_sends_json_body_not_form_encoded():
-    """The single highest-value test in this file. If someone changes the
-    implementation from `json=` to `data=`, the request Content-Type
-    changes to `application/x-www-form-urlencoded` and the body is no
-    longer a JSON object -- both assertions below would fail."""
     responses.add(
         responses.POST,
         f"{BASE_URL}/scans/47/export",
@@ -156,8 +120,6 @@ def test_request_export_sends_json_body_not_form_encoded():
     request = responses.calls[0].request
 
     assert request.headers.get("Content-Type") == "application/json"
-    # request.body is bytes/str of a JSON-encoded object -- if this were
-    # form-encoded instead, json.loads would raise or yield the wrong shape.
     parsed = json.loads(request.body)
     assert parsed == {"format": "nessus"}
 
@@ -174,11 +136,6 @@ def test_request_export_with_history_id_includes_query_param():
     client.request_export(47, history_id=99)
 
     assert "history_id=99" in responses.calls[0].request.url
-
-
-# ---------------------------------------------------------------------------
-# export_status
-# ---------------------------------------------------------------------------
 
 
 @responses.activate
@@ -205,15 +162,9 @@ def test_export_status_ready():
     assert client.export_status(47, 1) == {"status": "ready"}
 
 
-# ---------------------------------------------------------------------------
-# download_export
-# ---------------------------------------------------------------------------
-
-
 @responses.activate
 def test_download_export_writes_file_byte_for_byte(tmp_path):
-    # Body bigger than one 1 MB chunk, to exercise multi-chunk streaming.
-    body_bytes = (b"NESSUS-EXPORT-CHUNK-DATA" * 100_000)  # ~2.4 MB
+    body_bytes = (b"NESSUS-EXPORT-CHUNK-DATA" * 100_000)
     responses.add(
         responses.GET,
         f"{BASE_URL}/scans/47/export/1/download",
@@ -243,11 +194,6 @@ def test_download_export_raises_on_error_status(tmp_path):
     with pytest.raises(NessusApiError):
         client.download_export(47, 1, str(dest))
     assert not dest.exists()
-
-
-# ---------------------------------------------------------------------------
-# wait_for_export_ready -- bounded polling (spec Section 3.4)
-# ---------------------------------------------------------------------------
 
 
 @responses.activate
@@ -297,8 +243,6 @@ def test_wait_for_export_ready_timeout(monkeypatch):
 
     monkeypatch.setattr("nessus_drata.nessus_client.time.sleep", lambda seconds: None)
 
-    # Fake monotonic clock: advances by 3 seconds on every call, so elapsed
-    # exceeds a 5-second timeout deterministically, with no wall-clock delay.
     clock = {"t": 0.0}
 
     def fake_monotonic():
@@ -333,11 +277,6 @@ def test_wait_for_export_ready_terminal_error_stops_immediately(monkeypatch):
     assert len(responses.calls) == 1
 
 
-# ---------------------------------------------------------------------------
-# non-2xx raises NessusApiError
-# ---------------------------------------------------------------------------
-
-
 @responses.activate
 def test_non_2xx_response_raises_nessus_api_error():
     responses.add(
@@ -350,11 +289,6 @@ def test_non_2xx_response_raises_nessus_api_error():
 
     with pytest.raises(NessusApiError):
         client.get_scan(47)
-
-
-# ---------------------------------------------------------------------------
-# verify_tls=False -- loud per-call warning, never global suppression
-# ---------------------------------------------------------------------------
 
 
 @responses.activate
@@ -383,11 +317,6 @@ def test_verify_tls_false_logs_warning_on_every_call(caplog):
         assert "TLS verification is DISABLED" in record.getMessage()
 
 
-# ---------------------------------------------------------------------------
-# secret redaction
-# ---------------------------------------------------------------------------
-
-
 @responses.activate
 def test_exception_message_never_contains_raw_credentials():
     responses.add(
@@ -404,11 +333,6 @@ def test_exception_message_never_contains_raw_credentials():
     message = str(excinfo.value)
     assert FAKE_ACCESS_KEY not in message
     assert FAKE_SECRET_KEY not in message
-
-
-# ---------------------------------------------------------------------------
-# read-only guarantee: no mutating methods exist on the client
-# ---------------------------------------------------------------------------
 
 
 def test_no_mutating_scan_methods_exist():

@@ -1,10 +1,3 @@
-"""Unit tests for state.py: last-run state persistence and the exclusive run
-lock (spec Section 8). Covers acceptance tests 17 and 18 at the state-layer
-level — the CLI-level "second invocation exits 6" behavior (test 17) is
-wired in cli.py's `run` command and exercised end-to-end there; this file
-proves the underlying lock primitive itself.
-"""
-
 from __future__ import annotations
 
 import os
@@ -63,8 +56,6 @@ def test_acquire_lock_released_even_on_exception(tmp_path):
 
 
 def test_acceptance_17_second_acquire_while_live_pid_holds_lock_raises():
-    # Use this test process's own PID as the "live" holder — it's
-    # definitely running for the duration of the test.
     import tempfile
     from pathlib import Path
 
@@ -75,18 +66,14 @@ def test_acceptance_17_second_acquire_while_live_pid_holds_lock_raises():
 
         with pytest.raises(LockHeldError):
             with acquire_lock(state_dir):
-                pass  # pragma: no cover — should never get here
+                pass  # pragma: no cover
 
-        # The held lock must be left untouched by the failed acquire.
         assert lock_path.exists()
         assert int(lock_path.read_text().strip()) == os.getpid()
 
 
 def test_acceptance_18_dead_pid_lock_is_reclaimed(tmp_path):
     lock_path = tmp_path / "collector.lock"
-    # PID 999999 is extremely unlikely to be a running process on any dev
-    # or CI machine. If this ever flakes in a strange environment, that's
-    # a sign the liveness check itself needs hardening, not this test.
     dead_pid = 999999
     lock_path.write_text(str(dead_pid))
 
@@ -96,15 +83,6 @@ def test_acceptance_18_dead_pid_lock_is_reclaimed(tmp_path):
 
 
 def test_windows_pid_liveness_treats_access_denied_as_running(monkeypatch):
-    """Review finding: OpenProcess returns a NULL handle both when the PID
-    doesn't exist AND when access is denied for a live process this token
-    can't query. Without distinguishing these, a second run under a
-    different security context (e.g. an admin's interactive session while
-    the service-account run is genuinely in progress) would treat a live
-    process's lock as stale and reclaim it -- exactly the double-run bug
-    the lock exists to prevent. The real ctypes.windll doesn't exist on
-    macOS, so it's injected as a fake to exercise the win32 code path here.
-    """
     import ctypes
     import types
 
@@ -117,7 +95,7 @@ def test_windows_pid_liveness_treats_access_denied_as_running(monkeypatch):
             self._last_error = last_error
 
         def OpenProcess(self, *_args):
-            return 0  # NULL handle: OpenProcess failed either way
+            return 0
 
         def GetLastError(self):
             return self._last_error

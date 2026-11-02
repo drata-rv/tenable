@@ -1,18 +1,9 @@
-"""Generate the Drata Custom Connection JSON schema from the checks manifest
-(spec Section 4.3). Pure function, no I/O — cli.py's gen-schema command owns
-writing the result to artifacts/schema.json.
-"""
-
 from __future__ import annotations
 
 from typing import Sequence
 
 from nessus_drata.config import CheckEntry
 
-# Fixed base properties, verbatim from spec Section 4.3. Every dynamic check
-# field added below is typed "string" to match the section's own example
-# (compliance results are always emitted as one of PASSED/FAILED/WARNING/
-# ERROR/NOT_FOUND/AMBIGUOUS text, never a number or boolean).
 _BASE_PROPERTIES = {
     "id": {"type": "string"},
     "hostname": {"type": "string"},
@@ -35,10 +26,6 @@ _BASE_PROPERTIES = {
 
 
 def generate_schema(checks: Sequence[CheckEntry]) -> dict:
-    """additionalProperties stays true (spec 4.3): adding a check to the
-    manifest is then an additive change existing records tolerate, with no
-    connection rebuild required.
-    """
     properties = dict(_BASE_PROPERTIES)
     for check in checks:
         properties[check.field] = {"type": "string"}

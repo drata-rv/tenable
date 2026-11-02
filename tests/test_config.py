@@ -1,5 +1,3 @@
-"""Acceptance tests 1-3: validate-config behavior. No network, no real credentials."""
-
 from __future__ import annotations
 
 import subprocess
@@ -120,7 +118,6 @@ def test_validate_config_missing_env_var_exits_two(tmp_path):
     env = os.environ.copy()
     env.update(DUMMY_ENV)
     del env["DRATA_API_KEY"]
-    # Explicit empty env file: keeps this test hermetic if a real .env exists.
     empty_env = tmp_path / "empty.env"
     empty_env.write_text("")
     env.pop("DRATA_API_KEY", None)
@@ -148,10 +145,6 @@ def test_validate_config_missing_env_var_exits_two(tmp_path):
 
 
 def test_redact_masks_short_secrets_completely():
-    """Review finding: redact() must not expose a secret whole just because
-    it's 4 characters or shorter -- "last 4 characters" is only a partial
-    mask when the secret is longer than that.
-    """
     from nessus_drata.config import redact
 
     assert redact("") == "****"

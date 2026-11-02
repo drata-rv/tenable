@@ -1,7 +1,3 @@
-"""Run report writer (spec Section 8). Writes artifacts/reports/<run_id>.json
-and prints a short console summary on every run, including failures.
-"""
-
 from __future__ import annotations
 
 import json
@@ -32,11 +28,9 @@ class RunReport:
     records_updated: int
     session_id: Optional[str]
     session_action: Optional[str]
-    safety_gates: tuple  # tuple of {"name":..., "passed":..., "reason":...} dicts
+    safety_gates: tuple
     exit_code: int
-    # Manifest fields with no match on at least one host (names, not values).
     manifest_missing_fields: tuple = ()
-    # Set when the scan had nothing to record; nothing is sent to Drata then.
     no_results_reason: Optional[str] = None
 
 

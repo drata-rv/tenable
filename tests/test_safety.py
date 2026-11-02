@@ -1,9 +1,3 @@
-"""Unit tests for safety.py's 6 gates (spec Section 5.5), acceptance tests
-10-13. safety.py is pure — no session cancellation or exit-code behavior
-happens here; that CLI-level wiring (actually cancelling a session, calling
-sys.exit(5)) is Phase 6. These tests prove the gate logic itself.
-"""
-
 from __future__ import annotations
 
 from nessus_drata.safety import (
@@ -81,12 +75,9 @@ def test_acceptance_12_force_bypasses_only_gates_1_and_2():
     forced = apply_force_bypass(gates, force=True)
     by_name = {g.name: g for g in forced}
 
-    # Gates 1 and 2 (min_hosts would still pass here since 60>=50 by default
-    # threshold, but max_shrink_ratio fails and must be bypassed) are flipped.
     assert by_name["max_shrink_ratio"].passed is True
     assert "BYPASSED by --force" in by_name["max_shrink_ratio"].reason
 
-    # Gate 3 (manifest_coverage) fails on NO RESULTS and is NEVER bypassed by --force.
     assert by_name["manifest_coverage"].passed is False
     assert not all_gates_passed(forced)
 
@@ -101,13 +92,13 @@ def test_force_false_does_not_change_anything():
 
 def test_force_never_bypasses_gates_3_through_6():
     gates = _gates(
-        record_count=10,  # gate 1 fails
-        previous_record_count=100,  # gate 2 fails (10 < 80)
+        record_count=10,
+        previous_record_count=100,
         coverage_pct=0.0,
-        no_results_reason=_NO_RESULTS,  # gate 3 fails
-        duplicate_ids=("nessus-dup",),  # gate 4 fails
-        parse_mode="csv_degraded",  # gate 5 fails
-        batch_upload_results=[True, False],  # gate 6 fails
+        no_results_reason=_NO_RESULTS,
+        duplicate_ids=("nessus-dup",),
+        parse_mode="csv_degraded",
+        batch_upload_results=[True, False],
     )
     forced = apply_force_bypass(gates, force=True)
     by_name = {g.name: g for g in forced}
@@ -149,8 +140,6 @@ def test_manifest_coverage_gate_passes_at_or_above_threshold():
 
 
 def test_manifest_coverage_gate_pushes_partial_coverage_and_says_so():
-    # Policy change (operator-approved, deviates from spec 5.5 gate 3): a check
-    # that went missing no longer blocks the run; it is pushed as NOT_FOUND.
     gates = _gates(coverage_pct=40.0)
     coverage_gate = next(g for g in gates if g.name == "manifest_coverage")
     assert coverage_gate.passed is True

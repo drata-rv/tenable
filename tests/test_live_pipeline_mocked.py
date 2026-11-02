@@ -1,16 +1,3 @@
-"""End-to-end pipeline test with BOTH Nessus and Drata HTTP calls mocked via
-`responses`, run in-process (not subprocess, so `responses` can intercept).
-
-This is NOT a substitute for acceptance tests 20-24, which require a real
-Nessus console and a real Drata sandbox connection and remain pending
-operator execution — nothing here proves the real APIs behave as documented.
-What this DOES prove, fully offline: the orchestration wiring in cli.py
-(_live_nessus_export, _live_drata_push, _resolve_scan_id, session id
-construction, safety-gate sequencing, complete-vs-cancel branching, and
-state persistence) is internally consistent and calls each client method
-with the right arguments in the right order.
-"""
-
 from __future__ import annotations
 
 import json
@@ -117,8 +104,6 @@ def _register_drata_mocks(rsps: responses.RequestsMock, session_action_capture: 
         status=200,
     )
 
-    # Session id depends on a computed timestamp, so match by regex instead
-    # of a literal URL.
     import re
 
     session_batch_re = re.compile(
@@ -130,8 +115,6 @@ def _register_drata_mocks(rsps: responses.RequestsMock, session_action_capture: 
 
     def batch_callback(request):
         sent = json.loads(request.body)["data"]
-        # Realistic per-record echo: first record "created" (201), the
-        # rest "updated" (200) -- exercises count_record_outcomes end to end.
         results = [
             {"id": r["id"], "statusCode": 201 if i == 0 else 200}
             for i, r in enumerate(sent)
@@ -186,22 +169,12 @@ def test_live_pipeline_completes_session_end_to_end(tmp_path, monkeypatch):
     assert report["session_action"] == "complete"
     assert report["parse_mode"] == "xml_full"
     assert report["record_count"] == 3
-    # Review finding: these were previously hardcoded 0 regardless of the
-    # actual upload response. batch_callback echoes 1 created + 2 updated.
     assert report["records_created"] == 1
     assert report["records_updated"] == 2
 
 
 @responses.activate
 def test_stale_session_cleanup_failure_does_not_abort_the_run(tmp_path, monkeypatch):
-    """Regression test for a live-reproduced bug (2026-09-09): a real Drata
-    sandbox returned 422 (undocumented by spec) on the plain GET .../sessions
-    listing call, which aborted the entire run before any real upload was
-    even attempted. Stale-session cleanup is best-effort housekeeping, not
-    the actual push -- its failure must be logged and the run must proceed
-    to upload and complete normally. A genuine session conflict still
-    surfaces for real via the 409 path during the actual upload.
-    """
     monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
     monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
     monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
@@ -211,8 +184,6 @@ def test_stale_session_cleanup_failure_does_not_abort_the_run(tmp_path, monkeypa
     config_path = _write_config(tmp_path)
     _register_nessus_mocks(responses)
 
-    # The listing call itself fails with an undocumented status -- this is
-    # the exact shape observed live.
     responses.add(
         responses.GET,
         f"{DRATA_BASE}/public/v2/custom-connections/99/resources/5/sessions",
@@ -246,15 +217,6 @@ def test_stale_session_cleanup_failure_does_not_abort_the_run(tmp_path, monkeypa
 
 @responses.activate
 def test_stale_session_cleanup_prefers_sessionId_over_short_internal_id(tmp_path, monkeypatch):
-    """Regression test for a bug reproduced live against a real Drata
-    sandbox (2026-09-09): a session-list entry carries both a short
-    internal database id ("id": 1) and the real application-level
-    identifier ("sessionId": "nessus-..."). The collector picked "id"
-    first, tried to cancel session "1", and Drata correctly rejected it
-    with 400 "Session ID must be between 3 and 64 characters". This test
-    proves cancel_session is called with the real sessionId, never the
-    short internal id, using the exact shape observed live.
-    """
     monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
     monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
     monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
@@ -266,8 +228,6 @@ def test_stale_session_cleanup_prefers_sessionId_over_short_internal_id(tmp_path
 
     stale_session_id = "nessus-999-20250101T000000Z"
 
-    # Exact shape observed live: internal db "id" (short, invalid as a
-    # Drata session id) alongside the real "sessionId".
     responses.add(
         responses.GET,
         f"{DRATA_BASE}/public/v2/custom-connections/99/resources/5/sessions",
@@ -303,21 +263,14 @@ def test_stale_session_cleanup_prefers_sessionId_over_short_internal_id(tmp_path
     exit_code = cli.main(["--config", str(config_path), "--checks", str(CHECKS), "run"])
 
     assert exit_code == 0, "expected the run to complete despite the stale session"
-    # The wrong (short, invalid) id must NEVER be sent to cancel_session.
     assert "1" not in cancelled_ids
-    # The real sessionId is what gets cancelled.
     assert cancelled_ids == [stale_session_id]
-    # Our own new session still completes normally afterward.
     assert len(completed_ids) == 1
     assert completed_ids[0].startswith("nessus-47-")
 
 
 @responses.activate
 def test_stale_session_cleanup_only_cancels_in_progress_sessions(tmp_path, monkeypatch):
-    """Live shape (2026-10-29): the server ignores ?status=IN_PROGRESS and
-    returns every session, spelling the terminal state "CANCELED". Only the
-    IN_PROGRESS one may be cancelled; the CANCELED and ACTIVE ones must not
-    be sent a cancel at all."""
     monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
     monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
     monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
@@ -369,10 +322,6 @@ def test_stale_session_cleanup_only_cancels_in_progress_sessions(tmp_path, monke
 
 @responses.activate
 def test_live_pipeline_aborts_and_cancels_when_record_rejected_with_201(tmp_path, monkeypatch):
-    """Live bug (2026-10-29): Drata answered the batch POST with HTTP 200,
-    statusCode 201 and an "error" (schema validation) per record, nothing was
-    staged, and the run went on to complete an empty session. A rejected
-    record must fail the batch: no complete, session cancelled, exit 5."""
     monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
     monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
     monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
@@ -441,8 +390,6 @@ def test_live_pipeline_cancels_session_when_safety_gate_fails(tmp_path, monkeypa
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("nessus_drata.nessus_client.time.sleep", lambda _s: None)
 
-    # min_hosts set higher than the 3 hosts in sample_small.nessus so gate 1
-    # fails before any batch is ever uploaded.
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         _write_config(tmp_path).read_text().replace("min_hosts: 1", "min_hosts: 50")
@@ -463,9 +410,6 @@ def test_live_pipeline_cancels_session_when_safety_gate_fails(tmp_path, monkeypa
     )
 
     assert exit_code == 5
-    # No batch was ever uploaded, so there's no session for Drata to cancel
-    # server-side — the pipeline must not call the cancel action on a
-    # session that was never created.
     assert session_actions == []
 
     reports = list((tmp_path / "artifacts" / "reports").glob("*.json"))
@@ -474,19 +418,12 @@ def test_live_pipeline_cancels_session_when_safety_gate_fails(tmp_path, monkeypa
     gate_by_name = {g["name"]: g for g in report["safety_gates"]}
     assert gate_by_name["min_hosts"]["passed"] is False
 
-    # A failed run must not update last-success state.
     state = load_last_run_state(tmp_path / "state")
     assert state.last_record_count is None
 
 
 @responses.activate
 def test_live_pipeline_cancels_real_session_when_batch_upload_fails(tmp_path, monkeypatch):
-    """Gates 1-5 all pass (so a batch upload is actually attempted and a
-    session genuinely gets created server-side), but the batch upload
-    itself fails -- gate 6 then fails post-upload, and THIS is the path
-    that must call the real cancel_session action, unlike the pre-upload
-    abort case above.
-    """
     monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
     monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
     monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
@@ -513,7 +450,6 @@ def test_live_pipeline_cancels_real_session_when_batch_upload_fails(tmp_path, mo
         rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/[^/]+/actions$"
     )
 
-    # The batch upload itself fails (schema validation failure, no retry).
     responses.add(responses.POST, session_batch_re, json={"message": "bad record"}, status=400)
 
     session_actions: list = []
@@ -528,8 +464,6 @@ def test_live_pipeline_cancels_real_session_when_batch_upload_fails(tmp_path, mo
     exit_code = cli.main(["--config", str(config_path), "--checks", str(CHECKS), "run"])
 
     assert exit_code == 5
-    # A real session was created (a batch was actually POSTed to it), so the
-    # real cancel action must have been called on it.
     assert session_actions == ["cancel"]
 
     reports = list((tmp_path / "artifacts" / "reports").glob("*.json"))
@@ -545,11 +479,6 @@ def test_live_pipeline_cancels_real_session_when_batch_upload_fails(tmp_path, mo
 
 @responses.activate
 def test_409_conflict_retries_batch_once_then_succeeds(tmp_path, monkeypatch):
-    """Review finding: spec 5.4's "409 -> cancel stale session, retry once,
-    then terminal" was never implemented by any caller. This proves the
-    fix: a 409 on the first batch upload attempt triggers a stale-session
-    cleanup pass and exactly one retry of that same batch, which succeeds.
-    """
     monkeypatch.setenv("NESSUS_ACCESS_KEY", "test-nessus-access")
     monkeypatch.setenv("NESSUS_SECRET_KEY", "test-nessus-secret")
     monkeypatch.setenv("DRATA_API_KEY", "test-drata-key")
@@ -561,8 +490,6 @@ def test_409_conflict_retries_batch_once_then_succeeds(tmp_path, monkeypatch):
 
     import re
 
-    # list_sessions is called once up front and once more during the 409
-    # retry's stale-session cleanup -- both empty, nothing to cancel.
     responses.add(
         responses.GET,
         f"{DRATA_BASE}/public/v2/custom-connections/99/resources/5/sessions",
@@ -583,7 +510,6 @@ def test_409_conflict_retries_batch_once_then_succeeds(tmp_path, monkeypatch):
         rf"{re.escape(DRATA_BASE)}/public/v2/custom-connections/99/resources/5/sessions/[^/]+/actions$"
     )
 
-    # First attempt: 409 conflict. Second attempt (the retry): succeeds.
     responses.add(
         responses.POST, session_batch_re, json={"message": "session state conflict"}, status=409
     )
@@ -603,7 +529,6 @@ def test_409_conflict_retries_batch_once_then_succeeds(tmp_path, monkeypatch):
     assert exit_code == 0, "expected the 409 retry to succeed and the session to complete"
     assert session_actions == ["complete"]
 
-    # Exactly 2 POSTs to the batch endpoint (original + one retry, not more).
     batch_calls = [
         c for c in responses.calls if session_batch_re.match(c.request.url or "")
     ]
@@ -611,12 +536,6 @@ def test_409_conflict_retries_batch_once_then_succeeds(tmp_path, monkeypatch):
 
 
 def _write_csv_config(tmp_path: Path) -> Path:
-    """Like _write_config, but export_format: csv and manifest-coverage gate
-    disabled (min_manifest_coverage_pct: 0) so these tests isolate the
-    parse_mode gate specifically -- the CSV fixture's check names only
-    partially match checks_small.yaml, which would otherwise also fail the
-    coverage gate and muddy what's being proven here (acceptance test 13).
-    """
     config_path = tmp_path / "config_csv.yaml"
     config_path.write_text(
         _write_config(tmp_path)
@@ -737,8 +656,6 @@ def _live_run(tmp_path, monkeypatch, *, download_body, extra_args=(), checks=CHE
 
 @responses.activate
 def test_live_partial_coverage_pushes_not_found_instead_of_aborting(tmp_path, monkeypatch):
-    # One manifest check the scan does not contain: coverage 80% (< 90%) used
-    # to abort the whole run. It must now complete and record NOT_FOUND.
     checks = tmp_path / "checks_with_missing.yaml"
     checks.write_text(
         CHECKS.read_text()
@@ -785,8 +702,6 @@ def test_live_scan_with_hosts_but_no_compliance_results_sends_nothing(tmp_path, 
 
 @responses.activate
 def test_live_scan_with_no_hosts_sends_nothing_even_with_force(tmp_path, monkeypatch):
-    # --force bypasses min_hosts, which would otherwise let a zero-host export
-    # complete a session and wipe the dataset. NO RESULTS is never bypassed.
     exit_code, session_actions, report = _live_run(
         tmp_path,
         monkeypatch,
@@ -799,5 +714,5 @@ def test_live_scan_with_no_hosts_sends_nothing_even_with_force(tmp_path, monkeyp
     assert report["record_count"] == 0
     assert "no hosts" in report["no_results_reason"]
     gates = {g["name"]: g for g in report["safety_gates"]}
-    assert gates["min_hosts"]["passed"] is True  # bypassed by --force
+    assert gates["min_hosts"]["passed"] is True
     assert gates["manifest_coverage"]["passed"] is False
