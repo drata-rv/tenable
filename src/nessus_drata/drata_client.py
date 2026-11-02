@@ -14,13 +14,11 @@ logger = logging.getLogger(__name__)
 DRATA_401_10000_CHECKLIST = """\
 Drata returned 401 (code 10000). All API-key auth failures collapse into this
 code, so check each cause in order:
-  1. Authorization header must read "Bearer <key>". A bare key returns this exact error.
+  1. Authorization header must read "Bearer <key>".
   2. Key revoked.
   3. Key expired.
   4. Source IP not in the key's allowed-IP list.
   5. Key lacks Custom Connections Data scopes (Create, Create and Update, Delete).
-A different connection returning 403 instead of 401 indicates the key itself is
-valid and the problem is scope or connection ownership, not authentication.
 """
 
 _RETRYABLE_STATUS_CODES = {429}
