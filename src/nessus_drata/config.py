@@ -130,6 +130,9 @@ def _load_yaml(path: Path, kind: str) -> dict:
 
 def _build_nessus(raw: dict) -> NessusConfig:
     defaults = NessusConfig()
+    export_format = raw.get("export_format", defaults.export_format)
+    if export_format != "nessus":
+        raise ConfigError(f'nessus.export_format must be "nessus", got {export_format!r}')
     return NessusConfig(
         base_url=raw.get("base_url", defaults.base_url),
         verify_tls=raw.get("verify_tls", defaults.verify_tls),
@@ -137,7 +140,7 @@ def _build_nessus(raw: dict) -> NessusConfig:
         scan_id=raw.get("scan_id", defaults.scan_id),
         scan_name_exact=raw.get("scan_name_exact", defaults.scan_name_exact),
         use_latest_history=raw.get("use_latest_history", defaults.use_latest_history),
-        export_format=raw.get("export_format", defaults.export_format),
+        export_format=export_format,
         export_timeout_seconds=raw.get("export_timeout_seconds", defaults.export_timeout_seconds),
         connect_timeout_seconds=raw.get("connect_timeout_seconds", defaults.connect_timeout_seconds),
         read_timeout_seconds=raw.get("read_timeout_seconds", defaults.read_timeout_seconds),

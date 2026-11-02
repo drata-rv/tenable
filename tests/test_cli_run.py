@@ -80,7 +80,6 @@ def test_dry_run_with_fixtures_requires_zero_credentials(tmp_path):
     report_files = list((tmp_path / "artifacts" / "reports").iterdir())
     assert len(report_files) == 1
     report = json.loads(report_files[0].read_text())
-    assert report["parse_mode"] == "xml_full"
     assert report["exit_code"] == 0
     gate_names = {g["name"] for g in report["safety_gates"]}
     assert gate_names == {
@@ -88,7 +87,6 @@ def test_dry_run_with_fixtures_requires_zero_credentials(tmp_path):
         "max_shrink_ratio",
         "manifest_coverage",
         "duplicate_ids",
-        "parse_mode",
         "batch_uploads",
     }
 
@@ -137,7 +135,7 @@ def test_acceptance_17_second_run_while_lock_held_exits_six(tmp_path):
     assert not (tmp_path / "artifacts" / "payloads").exists()
 
 
-def test_force_and_allow_degraded_session_work_after_run(tmp_path):
+def test_force_works_after_run(tmp_path):
     result = _run_cli(
         [
             "--config",
@@ -149,7 +147,6 @@ def test_force_and_allow_degraded_session_work_after_run(tmp_path):
             str(REPO_ROOT / FIXTURE),
             "--dry-run",
             "--force",
-            "--allow-degraded-session",
         ],
         env=os.environ.copy(),
         cwd=tmp_path,

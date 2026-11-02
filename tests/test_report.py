@@ -10,7 +10,6 @@ def _sample_report(**overrides) -> RunReport:
         run_id="20260818T110003Z",
         started_at="2026-08-18T11:00:00Z",
         finished_at="2026-08-18T11:00:03Z",
-        parse_mode="xml_full",
         scan_id=47,
         scan_name="CIS Workstation Audit",
         scan_ended_at="2026-08-18T04:15:00Z",

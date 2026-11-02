@@ -64,8 +64,7 @@ class NessusClient:
         if not self._verify_tls:
             logger.warning(
                 "TLS verification is DISABLED for this Nessus API call "
-                "(verify_tls=false) do not use in production.",
-                path,
+                "(verify_tls=false) do not use in production."
             )
 
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:

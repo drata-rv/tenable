@@ -152,3 +152,23 @@ def test_redact_masks_short_secrets_completely():
     assert redact("abcd") == "****"
     assert redact("abcde") == "****bcde"
     assert redact("a-real-looking-secret-key-12345") == "****2345"
+
+
+def test_validate_config_rejects_csv_export_format(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        (REPO_ROOT / "config" / "config.example.yaml")
+        .read_text()
+        .replace('export_format: "nessus"', 'export_format: "csv"')
+    )
+    result = _run_cli(
+        [
+            "--config",
+            str(config_path),
+            "--checks",
+            "config/checks.example.yaml",
+            "validate-config",
+        ]
+    )
+    assert result.returncode == 2
+    assert "export_format" in result.stderr

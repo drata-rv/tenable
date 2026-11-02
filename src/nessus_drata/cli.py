@@ -23,7 +23,6 @@ from .diagnostics import analyze_manifest, log_diagnosis, no_results_reason
 from .drata_client import DrataApiError, DrataClient, DrataResponseError, count_record_outcomes
 from .logging_setup import setup_logging
 from .nessus_client import NessusApiError, NessusClient
-from .parse_nessus_csv import parse_nessus_csv
 from .parse_nessus_xml import ExportParseError, parse_nessus_xml
 from .report import RunReport, print_console_summary, write_report
 from .safety import all_gates_passed, apply_force_bypass, bypassed_gate_names, evaluate_gates
@@ -185,7 +184,7 @@ def _epoch_to_iso(value) -> Optional[str]:
 
 def _live_nessus_export(
     config: AppConfig, run_id: str
-) -> tuple[list, str, int, str, Optional[str]]:
+) -> tuple[list, int, str, Optional[str]]:
     access_key = get_required_env("NESSUS_ACCESS_KEY")
     secret_key = get_required_env("NESSUS_SECRET_KEY")
     client = _build_nessus_client(config, access_key, secret_key)
@@ -226,34 +225,21 @@ def _live_nessus_export(
     )
 
     raw_dir = Path(config.runtime.artifacts_dir) / "raw" / run_id
-    extension = "csv" if config.nessus.export_format == "csv" else "nessus"
-    dest_path = raw_dir / f"scan-{scan_id}.{extension}"
+    dest_path = raw_dir / f"scan-{scan_id}.nessus"
     client.download_export(scan_id, file_id, dest_path)
 
-    if config.nessus.export_format == "csv":
-        hosts = list(parse_nessus_csv(dest_path))
-        parse_mode = "csv_degraded"
-    else:
-        hosts = list(parse_nessus_xml(dest_path))
-        parse_mode = "xml_full"
-
-    return hosts, parse_mode, scan_id, scan_name, scan_ended_at
+    return list(parse_nessus_xml(dest_path)), scan_id, scan_name, scan_ended_at
 
 
 def _parse_scan_input(
     args: argparse.Namespace, config: AppConfig, run_id: str
-) -> tuple[list, str, int, str, Optional[str]]:
+) -> tuple[list, int, str, Optional[str]]:
     if args.fixtures:
         fixtures_path = Path(args.fixtures)
-        if fixtures_path.suffix.lower() == ".csv":
-            hosts = list(parse_nessus_csv(fixtures_path))
-            parse_mode = "csv_degraded"
-        else:
-            hosts = list(parse_nessus_xml(fixtures_path))
-            parse_mode = "xml_full"
+        hosts = list(parse_nessus_xml(fixtures_path))
         scan_id = config.nessus.scan_id if config.nessus.scan_id is not None else 0
         scan_name = f"Fixture Import: {fixtures_path.name}"
-        return hosts, parse_mode, scan_id, scan_name, None
+        return hosts, scan_id, scan_name, None
 
     return _live_nessus_export(config, run_id)
 
@@ -351,7 +337,6 @@ def _upload_batch_with_409_retry(
 def _live_drata_push(
     config: AppConfig,
     records: tuple,
-    parse_mode: str,
     summary,
     no_results: Optional[str],
     prior_state: LastRunState,
@@ -373,8 +358,6 @@ def _live_drata_push(
             previous_record_count=prior_state.last_record_count,
             coverage_pct=summary.coverage_pct,
             duplicate_ids=summary.duplicate_ids,
-            parse_mode=parse_mode,
-            allow_degraded_session=args.allow_degraded_session,
             batch_upload_results=batch_upload_results,
             min_hosts=config.safety.min_hosts,
             max_shrink_ratio=config.safety.max_shrink_ratio,
@@ -447,7 +430,7 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
     started_at = _now_iso()
     run_id = _run_id_from(started_at)
 
-    hosts, parse_mode, scan_id, scan_name, live_scan_ended_at = _parse_scan_input(
+    hosts, scan_id, scan_name, live_scan_ended_at = _parse_scan_input(
         args, config, run_id
     )
 
@@ -499,8 +482,6 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
             previous_record_count=prior_state.last_record_count,
             coverage_pct=summary.coverage_pct,
             duplicate_ids=summary.duplicate_ids,
-            parse_mode=parse_mode,
-            allow_degraded_session=args.allow_degraded_session,
             batch_upload_results=None,
             min_hosts=config.safety.min_hosts,
             max_shrink_ratio=config.safety.max_shrink_ratio,
@@ -534,7 +515,6 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
         ) = _live_drata_push(
             config,
             records,
-            parse_mode,
             summary,
             no_results,
             prior_state,
@@ -560,7 +540,6 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
         run_id=run_id,
         started_at=started_at,
         finished_at=finished_at,
-        parse_mode=parse_mode,
         scan_id=scan_id,
         scan_name=scan_name,
         scan_ended_at=scan_ended_at,
@@ -656,10 +635,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--fixtures",
         default=None,
-        help="Path to a .nessus or .csv fixture file; skips the Nessus client entirely",
+        help="Path to a .nessus fixture file; skips the Nessus client entirely",
     )
     run_parser.add_argument("--force", action="store_true")
-    run_parser.add_argument("--allow-degraded-session", action="store_true")
 
     return parser
 

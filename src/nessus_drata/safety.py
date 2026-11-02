@@ -71,22 +71,6 @@ def _gate_duplicate_ids(duplicate_ids: Sequence[str]) -> GateResult:
     return GateResult("duplicate_ids", passed, reason)
 
 
-def _gate_parse_mode(parse_mode: str, allow_degraded_session: bool) -> GateResult:
-    if parse_mode == "xml_full":
-        return GateResult("parse_mode", True, "parse_mode is xml_full")
-    if allow_degraded_session:
-        return GateResult(
-            "parse_mode",
-            True,
-            f"parse_mode is {parse_mode!r}, but --allow-degraded-session was passed",
-        )
-    return GateResult(
-        "parse_mode",
-        False,
-        f"parse_mode is {parse_mode!r} and --allow-degraded-session was not passed",
-    )
-
-
 def _gate_batch_uploads(batch_upload_results: Optional[Sequence[bool]]) -> GateResult:
     if batch_upload_results is None:
         return GateResult(
@@ -110,8 +94,6 @@ def evaluate_gates(
     previous_record_count: Optional[int],
     coverage_pct: float,
     duplicate_ids: Sequence[str],
-    parse_mode: str,
-    allow_degraded_session: bool,
     batch_upload_results: Optional[Sequence[bool]],
     min_hosts: int,
     max_shrink_ratio: float,
@@ -123,7 +105,6 @@ def evaluate_gates(
         _gate_max_shrink_ratio(record_count, previous_record_count, max_shrink_ratio),
         _gate_manifest_coverage(coverage_pct, min_manifest_coverage_pct, no_results_reason),
         _gate_duplicate_ids(duplicate_ids),
-        _gate_parse_mode(parse_mode, allow_degraded_session),
         _gate_batch_uploads(batch_upload_results),
     )
 

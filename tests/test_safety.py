@@ -23,8 +23,6 @@ def _gates(**overrides):
         previous_record_count=None,
         coverage_pct=100.0,
         duplicate_ids=(),
-        parse_mode="xml_full",
-        allow_degraded_session=False,
         batch_upload_results=None,
         **_DEFAULTS,
     )
@@ -40,7 +38,6 @@ def test_all_gates_pass_on_healthy_run():
         "max_shrink_ratio",
         "manifest_coverage",
         "duplicate_ids",
-        "parse_mode",
         "batch_uploads",
     ]
 
@@ -90,14 +87,13 @@ def test_force_false_does_not_change_anything():
     assert not_forced == gates
 
 
-def test_force_never_bypasses_gates_3_through_6():
+def test_force_never_bypasses_gates_3_through_5():
     gates = _gates(
         record_count=10,
         previous_record_count=100,
         coverage_pct=0.0,
         no_results_reason=_NO_RESULTS,
         duplicate_ids=("nessus-dup",),
-        parse_mode="csv_degraded",
         batch_upload_results=[True, False],
     )
     forced = apply_force_bypass(gates, force=True)
@@ -107,7 +103,6 @@ def test_force_never_bypasses_gates_3_through_6():
     assert by_name["max_shrink_ratio"].passed is True
     assert by_name["manifest_coverage"].passed is False
     assert by_name["duplicate_ids"].passed is False
-    assert by_name["parse_mode"].passed is False
     assert by_name["batch_uploads"].passed is False
     assert set(bypassed_gate_names(forced)) == {"min_hosts", "max_shrink_ratio"}
 
@@ -117,20 +112,6 @@ def test_duplicate_ids_gate():
     dup_gate = next(g for g in gates if g.name == "duplicate_ids")
     assert dup_gate.passed is False
     assert "nessus-wks-0001" in dup_gate.reason
-
-
-def test_acceptance_13_csv_degraded_parse_mode_refused_without_flag():
-    gates = _gates(parse_mode="csv_degraded", allow_degraded_session=False)
-    parse_mode_gate = next(g for g in gates if g.name == "parse_mode")
-    assert parse_mode_gate.passed is False
-    assert not all_gates_passed(gates)
-
-
-def test_csv_degraded_parse_mode_allowed_with_flag():
-    gates = _gates(parse_mode="csv_degraded", allow_degraded_session=True)
-    parse_mode_gate = next(g for g in gates if g.name == "parse_mode")
-    assert parse_mode_gate.passed is True
-    assert all_gates_passed(gates)
 
 
 def test_manifest_coverage_gate_passes_at_or_above_threshold():

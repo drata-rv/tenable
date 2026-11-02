@@ -5,7 +5,7 @@ nessus:
   scan_id: 47
   scan_name_exact: null
   use_latest_history: true
-  export_format: "nessus"        # "nessus" | "csv"
+  export_format: "nessus"
   export_timeout_seconds: 900
   connect_timeout_seconds: 10
   read_timeout_seconds: 120

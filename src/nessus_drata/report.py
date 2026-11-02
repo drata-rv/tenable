@@ -11,7 +11,6 @@ class RunReport:
     run_id: str
     started_at: str
     finished_at: str
-    parse_mode: str
     scan_id: Optional[int]
     scan_name: Optional[str]
     scan_ended_at: Optional[str]
@@ -43,7 +42,7 @@ def write_report(reports_dir: Path, report: RunReport) -> Path:
 
 
 def print_console_summary(report: RunReport) -> None:
-    print(f"run_id={report.run_id} exit_code={report.exit_code} parse_mode={report.parse_mode}")
+    print(f"run_id={report.run_id} exit_code={report.exit_code}")
     if report.no_results_reason:
         print(
             f"  NO RESULTS for scan {report.scan_id} ({report.scan_name}): "
