@@ -66,12 +66,6 @@ class DrataConfig:
     use_sessions: bool = True
     batch_size: int = 25
     max_retries: int = 5
-    # Spec gap: Section 4.4 references `drata.record_id_prefix` by name
-    # ("id = drata.record_id_prefix + '-' + slug(host_key)") and Section 14
-    # lists its assumed default ("nessus", fixed permanently at go-live), but
-    # the Section 7.1 config.yaml example never actually lists this key.
-    # Filling the gap with the spec's own stated default rather than
-    # inventing an unrelated one.
     record_id_prefix: str = "nessus"
 
 
@@ -118,13 +112,6 @@ class AppConfig:
 
 
 def redact(value: str) -> str:
-    """Redact a secret to its last 4 characters, e.g. '****ab12'.
-
-    A secret at or under 4 characters is masked completely rather than
-    shown in full -- "redact to last 4 characters" implicitly assumes the
-    secret is longer than that; real API keys always are, but this must
-    never be the path that leaks a short one whole.
-    """
     if not value or len(value) <= 4:
         return "****"
     return f"****{value[-4:]}"
@@ -261,10 +248,6 @@ def load_checks_manifest(path: Path) -> tuple[CheckEntry, ...]:
 
 
 def load_manifest_audit_file(path: Path) -> Optional[str]:
-    """The checks manifest's top-level `audit_file` key. Separate from
-    load_checks_manifest (which returns only the CheckEntry tuple) to avoid
-    changing that function's already-tested return shape.
-    """
     raw = _load_yaml(path, "checks manifest")
     audit_file = raw.get("audit_file")
     return audit_file if isinstance(audit_file, str) else None
@@ -278,17 +261,12 @@ def _parse_env_value(raw: str) -> str:
     if raw[:1] in ("'", '"'):
         end = raw.find(raw[0], 1)
         if end != -1:
-            # Closing quote found: anything after it (e.g. a trailing comment) is dropped.
             return raw[1:end]
     comment = re.search(r"\s#", raw)
     return (raw[: comment.start()] if comment else raw).strip()
 
 
 def parse_env_text(text: str) -> tuple[dict[str, str], list[int]]:
-    """Parse KEY=VALUE lines. Returns (values, line numbers that were not
-    KEY=VALUE). Never returns or logs line content -- a malformed line may
-    still be a secret. No escape processing; the last duplicate key wins.
-    """
     values: dict[str, str] = {}
     bad_lines: list[int] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
@@ -304,19 +282,6 @@ def parse_env_text(text: str) -> tuple[dict[str, str], list[int]]:
 
 
 def load_env_file(path: Path, *, required: bool = False) -> list[str]:
-    """Load the secrets in a .env file into os.environ. Returns the names set.
-
-    Deliberate limits, all so a .env can never change behaviour beyond
-    supplying the three secrets:
-    - only REQUIRED_ENV_VARS are honoured; any other key is skipped with a
-      warning naming the key (never the value) -- a stray PATH or
-      PYTHONPATH in a .env must not alter the interpreter's behaviour.
-    - a variable that is already set and non-empty in the real environment
-      wins, so machine-scope variables on the Windows box (spec Section 9.5)
-      still take precedence over a file left lying around.
-    - blank values are ignored, so the shipped .env.example is inert.
-    A missing file is fine unless required=True (an explicit --env-file).
-    """
     path = Path(path)
     try:
         text = path.read_text(encoding="utf-8-sig")
@@ -363,14 +328,6 @@ def load_secrets() -> Secrets:
 
 
 def get_required_env(name: str) -> str:
-    """Fetch a single required secret on demand, raising ConfigError naming
-    just that variable. Used by the `run` command so --fixtures/--dry-run
-    combinations only demand the specific secrets they actually need, never
-    all three unconditionally (see load_config's require_secrets param) --
-    fixture mode must work with zero credentials (spec Section 2 #4, Section
-    10), which validate-config's all-three-required contract (Section 7.2)
-    does not have to honor.
-    """
     value = os.environ.get(name)
     if not value:
         raise ConfigError(
