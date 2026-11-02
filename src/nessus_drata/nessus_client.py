@@ -64,10 +64,7 @@ class NessusClient:
         if not self._verify_tls:
             logger.warning(
                 "TLS verification is DISABLED for this Nessus API call "
-                "(verify_tls=false) -- connection to %s is NOT verified "
-                "and is vulnerable to interception. This is an explicit "
-                "escape hatch (spec Section 2 #7 / 9.6); do not use in "
-                "production without documented customer acknowledgement.",
+                "(verify_tls=false) do not use in production.",
                 path,
             )
 
