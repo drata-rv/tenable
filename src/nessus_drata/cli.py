@@ -1,5 +1,3 @@
-"""Argparse entrypoint. Exit codes per spec Section 6.5."""
-
 from __future__ import annotations
 
 import argparse
@@ -150,11 +148,6 @@ def _run_id_from(started_at: str) -> str:
 
 
 def _session_id_for(scan_id: int, scan_ended_at: str) -> str:
-    """Deterministic, traceable session id (spec Section 5.3, literal format:
-    'nessus-{scan_id}-{scan_ended_at as YYYYMMDDTHHMMSSZ}'). The 'nessus-'
-    prefix here is a literal from the spec's own format string, distinct from
-    the configurable drata.record_id_prefix used for per-record ids.
-    """
     compact = scan_ended_at.replace(":", "").replace("-", "")
     return f"nessus-{scan_id}-{compact}"
 
@@ -165,8 +158,6 @@ def _chunk(items: list, size: int):
 
 
 def _resolve_scan_id(client: NessusClient, config: AppConfig) -> int:
-    """Spec Section 3.5: scan_id (preferred) or scan_name_exact, requiring
-    exactly one match. Never fuzzy match."""
     if config.nessus.scan_id is not None:
         return config.nessus.scan_id
     if config.nessus.scan_name_exact:
@@ -195,15 +186,6 @@ def _epoch_to_iso(value) -> Optional[str]:
 def _live_nessus_export(
     config: AppConfig, run_id: str
 ) -> tuple[list, str, int, str, Optional[str]]:
-    """Returns (host_results, parse_mode, scan_id, scan_name, scan_ended_at).
-
-    UNVERIFIED against a live console — this sandbox has no reachable Nessus
-    instance. Response field names (info.name, info.status,
-    history[].history_id/.status/.last_modification_date) follow the
-    standard, documented Nessus API shape referenced in the spec's own
-    Sources section, but this whole path is pending operator verification
-    per acceptance tests 20, 22, 23, 24.
-    """
     access_key = get_required_env("NESSUS_ACCESS_KEY")
     secret_key = get_required_env("NESSUS_SECRET_KEY")
     client = _build_nessus_client(config, access_key, secret_key)
@@ -261,13 +243,6 @@ def _live_nessus_export(
 def _parse_scan_input(
     args: argparse.Namespace, config: AppConfig, run_id: str
 ) -> tuple[list, str, int, str, Optional[str]]:
-    """Returns (host_results, parse_mode, scan_id, scan_name, scan_ended_at).
-
-    --fixtures skips the Nessus client entirely (spec Section 2 #4, Section
-    10) — zero network, zero credentials. scan_ended_at is None in fixture
-    mode (there's no real scan to report a freshness timestamp for); the
-    caller falls back to "now" in that case.
-    """
     if args.fixtures:
         fixtures_path = Path(args.fixtures)
         if fixtures_path.suffix.lower() == ".csv":
@@ -286,35 +261,6 @@ def _parse_scan_input(
 def _cancel_other_sessions(
     client: DrataClient, config: AppConfig, session_id: str, logger: logging.Logger
 ) -> None:
-    """Only one session may be IN_PROGRESS at a time (spec 5.3). Cancel any
-    OTHER stale in-progress session — never our own about-to-be-(re)used
-    session_id, since re-running the identical scan is a legitimate
-    retry/continuation, not a stale leftover.
-
-    Field-priority CONFIRMED against a live Drata sandbox (2026-09-09): a
-    session-list entry carries BOTH a short internal database id under
-    "id" (observed value: "1") AND the real application-level identifier
-    under "sessionId" (the string this client itself creates, spec 5.3's
-    "nessus-{scan_id}-{scan_ended_at}" format). Checking "id" first was a
-    live, reproduced bug — Drata's own session-actions endpoint validates
-    "Session ID must be between 3 and 64 characters" and correctly
-    rejected the short internal id with a 400. "sessionId" is now checked
-    FIRST, "id" LAST, and every candidate must be a string of 3-64 chars
-    (Drata's own stated constraint) before use — a wrong-field guess now
-    fails closed (tries the next candidate, then logs and skips) instead
-    of sending a request Drata is guaranteed to reject.
-
-    FAILS SOFT, deliberately: this whole function is best-effort proactive
-    housekeeping (spec 5.3's "before starting, list sessions and cancel
-    any stale in-progress session"), not the actual evidence push. A
-    real-world Drata sandbox returned a 422 here that isn't in the spec's
-    documented response table at all (also live-reproduced, 2026-09-09) —
-    letting that abort the entire run over a cleanup step, before even
-    attempting to upload real records, is worse than logging it and
-    proceeding. If a genuine session conflict exists, the actual upload
-    attempt below will hit it directly as a 409, which the 409-retry path
-    already handles for real.
-    """
     try:
         existing_sessions = client.list_sessions(config.drata.connection_id, config.drata.resource_id)
     except DrataApiError as exc:
@@ -327,10 +273,6 @@ def _cancel_other_sessions(
         return
 
     for existing in existing_sessions:
-        # The server ignores ?status=IN_PROGRESS (observed live 2026-10-29: a
-        # CANCELED session came back from that query) so filter here. Drata
-        # rejects cancel of anything not IN_PROGRESS with 422, and the list
-        # also holds the ACTIVE dataset, which must never be a cancel target.
         entry_status = existing.get("status")
         if isinstance(entry_status, str) and entry_status.upper() != "IN_PROGRESS":
             logger.debug(
@@ -379,9 +321,7 @@ def _upload_batch_with_409_retry(
     logger: logging.Logger,
 ) -> tuple[bool, Optional[dict]]:
     """Upload one batch. On a 409 (session state conflict), cancel any
-    stale session and retry this exact batch once, then terminal (spec
-    5.4: "cancel stale session, retry once, then terminal"). Returns
-    (success, response_body_or_None).
+    stale session and retry this exact batch once.
     """
     try:
         body = client.upload_session_batch(
@@ -423,18 +363,6 @@ def _live_drata_push(
     args: argparse.Namespace,
     logger: logging.Logger,
 ) -> tuple[int, Optional[str], str, int, int, int, tuple]:
-    """Session-based push (spec Section 5.3) with safety-gate enforcement
-    (Section 5.5). Returns (exit_code, session_id, session_action,
-    batches_sent, records_created, records_updated, final_gates).
-
-    scan_id/scan_ended_at are the same values already resolved earlier in
-    _run_pipeline (not re-derived from records[0]) so the session id stays
-    deterministic per spec 5.3 even when records is empty.
-
-    UNVERIFIED against a live Drata sandbox — no reachable instance in this
-    build environment. Pending operator execution (acceptance test 22
-    specifically exercises this path end to end).
-    """
     if config.drata.connection_id == 0 or config.drata.resource_id == 0:
         raise ConfigError(
             "drata.connection_id and drata.resource_id must be set after "
@@ -472,11 +400,6 @@ def _live_drata_push(
     _cancel_other_sessions(client, config, session_id, logger)
 
     if not all_gates_passed(pre_gates):
-        # No batch has been uploaded under session_id yet, so there is no
-        # session for Drata to actually cancel (a session only exists
-        # server-side once the first batch POST creates it) — distinct from
-        # the post-upload failure path below, which does call cancel_session
-        # on a session that genuinely exists.
         logger.error("safety gate(s) failed before any upload; nothing sent")
         return EXIT_SAFETY_GATE, session_id, "aborted_pre_upload", 0, 0, 0, pre_gates
 
@@ -581,7 +504,7 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
             duplicate_ids=summary.duplicate_ids,
             parse_mode=parse_mode,
             allow_degraded_session=args.allow_degraded_session,
-            batch_upload_results=None,  # dry-run: no live upload attempted, gate 6 not evaluated
+            batch_upload_results=None,
             min_hosts=config.safety.min_hosts,
             max_shrink_ratio=config.safety.max_shrink_ratio,
             min_manifest_coverage_pct=config.safety.min_manifest_coverage_pct,
@@ -672,11 +595,6 @@ def _run_pipeline(args: argparse.Namespace, config: AppConfig, logger: logging.L
 
 def cmd_run(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config), Path(args.checks), require_secrets=False)
-
-    # Register any secret that happens to be set for redaction BEFORE any
-    # logging happens, even though this specific invocation may not strictly
-    # require it — closes the window where a log line could leak a secret
-    # that gets hard-required a few lines later (get_required_env).
     candidate_secrets = [
         v
         for v in (
@@ -712,16 +630,6 @@ def build_parser() -> argparse.ArgumentParser:
             "Real environment variables always take precedence."
         ),
     )
-    # --force and --allow-degraded-session deliberately do NOT live on the
-    # top-level parser (only run_parser defines them, below). argparse's
-    # subparser mechanism parses each subcommand's own arguments into a
-    # FRESH namespace and then copies every one of its dests back onto the
-    # parent namespace (see _SubParsersAction.__call__) -- so a dest defined
-    # on BOTH the parent and a subparser gets silently overwritten by the
-    # subparser's own default whenever the flag is supplied before the
-    # subcommand instead of after, with no error. Defining it only where
-    # it's actually used (run) makes "after run" the one unambiguous
-    # position, consistent with --dry-run/--fixtures.
 
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser(
